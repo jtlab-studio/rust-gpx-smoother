@@ -2,7 +2,7 @@
 /// Combines Custom and Enhanced Combo Conservative approaches based on terrain analysis
 /// Works for any GPX file without hardcoded route-specific optimizations
 use crate::custom_smoother::ElevationData;
-use crate::enhanced_combo_smoother::{enhanced_universal_smooth_conservative, calculate_elevation_gain_loss_enhanced};
+use crate::enhanced_combo_smoother::enhanced_universal_smooth_conservative;
 
 #[derive(Debug, Clone)]
 pub struct TerrainAnalysis {
@@ -191,7 +191,7 @@ fn classify_terrain_universal(
     loss_per_km: f64,
     max_gradient: f64,
     avg_gradient: f64,
-    roughness: f64
+    _roughness: f64 // Prefix with underscore to silence warning
 ) -> TerrainType {
     let total_elevation_per_km = gain_per_km + loss_per_km;
     

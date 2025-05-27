@@ -1,104 +1,193 @@
-/// Terrain-based elevation correction using Terrarium/Terrain-RGB DEM tiles
-/// Provides ground truth elevation data from satellite/aerial DEM sources
+/// Simplified Terrain-based elevation correction - 100% terrain data
+/// Three options: Raw, 150m smoothing, 300m smoothing
+/// Uses zoom level 15 with disk caching and rate limiting (max 3000 requests/second)
 use reqwest::blocking::get;
 use image::io::Reader as ImgReader;
-use image::{DynamicImage, Rgba};
+use image::{DynamicImage, ImageFormat, GenericImageView};
 use std::io::Cursor;
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 use std::collections::HashMap;
+use std::path::PathBuf;
+use std::fs;
+use std::time::{Duration, Instant};
+use std::thread;
 
 #[derive(Debug, Clone)]
-pub struct TerrainElevationConfig {
-    /// Zoom level for DEM tiles (higher = more accurate but more requests)
+pub struct TerrainConfig {
+    /// Fixed zoom level for maximum accuracy
     pub zoom_level: u8,
-    /// Enable tile caching to reduce HTTP requests
-    pub enable_caching: bool,
-    /// Blend factor between GPS and terrain elevation (0.0 = all terrain, 1.0 = all GPS)
-    pub gps_terrain_blend_factor: f64,
-    /// Maximum elevation difference to trust terrain over GPS (meters)
-    pub max_terrain_gps_diff_m: f64,
-    /// Fallback to GPS if terrain fetch fails
-    pub fallback_to_gps: bool,
+    /// Cache directory path
+    pub cache_dir: PathBuf,
+    /// Rate limiting: max requests per second
+    pub max_requests_per_second: u32,
+    /// Rolling smoothing window in meters (0.0 = no smoothing)
+    pub smoothing_window_meters: f64,
 }
 
-impl Default for TerrainElevationConfig {
+impl Default for TerrainConfig {
     fn default() -> Self {
-        TerrainElevationConfig {
-            zoom_level: 12,  // Good balance of accuracy vs requests
-            enable_caching: true,
-            gps_terrain_blend_factor: 0.3,  // 30% GPS, 70% terrain
-            max_terrain_gps_diff_m: 100.0,  // Trust terrain if diff < 100m
-            fallback_to_gps: true,
+        let cache_dir = std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join("terrain_cache");
+        
+        TerrainConfig {
+            zoom_level: 15,  // Maximum accuracy zoom level
+            cache_dir,
+            max_requests_per_second: 3000,
+            smoothing_window_meters: 150.0,  // Default 150m smoothing
         }
     }
 }
 
-impl TerrainElevationConfig {
-    /// High accuracy - more requests but better precision
-    pub fn high_accuracy() -> Self {
-        TerrainElevationConfig {
-            zoom_level: 14,
-            gps_terrain_blend_factor: 0.2,  // Trust terrain more
-            max_terrain_gps_diff_m: 200.0,
+impl TerrainConfig {
+    /// Raw terrain data - no smoothing
+    pub fn raw() -> Self {
+        TerrainConfig {
+            smoothing_window_meters: 0.0,  // No smoothing
             ..Default::default()
         }
     }
     
-    /// Conservative - fewer requests, blend more with GPS
-    pub fn conservative() -> Self {
-        TerrainElevationConfig {
-            zoom_level: 10,
-            gps_terrain_blend_factor: 0.5,  // Equal blend
-            max_terrain_gps_diff_m: 50.0,   // Stricter diff threshold
+    /// 150 meter smoothing window
+    pub fn smooth_150m() -> Self {
+        TerrainConfig {
+            smoothing_window_meters: 150.0,
+            ..Default::default()
+        }
+    }
+    
+    /// 300 meter smoothing window
+    pub fn smooth_300m() -> Self {
+        TerrainConfig {
+            smoothing_window_meters: 300.0,
             ..Default::default()
         }
     }
 }
 
-/// Tile cache to avoid repeated HTTP requests
-struct TileCache {
-    cache: HashMap<String, DynamicImage>,
-    enabled: bool,
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+struct TileKey {
+    z: u8,
+    x: u32,
+    y: u32,
 }
 
-impl TileCache {
-    fn new(enabled: bool) -> Self {
-        TileCache {
-            cache: HashMap::new(),
-            enabled,
-        }
+impl TileKey {
+    fn cache_filename(&self) -> String {
+        format!("tile_z{}_x{}_y{}.png", self.z, self.x, self.y)
+    }
+}
+
+/// Optimized disk-based tile cache with rate limiting
+struct OptimizedTileCache {
+    cache_dir: PathBuf,
+    memory_cache: HashMap<TileKey, DynamicImage>,
+    last_request_time: Instant,
+    min_request_interval: Duration,
+    request_count: u32,
+    request_window_start: Instant,
+}
+
+impl OptimizedTileCache {
+    fn new(config: &TerrainConfig) -> Result<Self> {
+        // Create cache directory if it doesn't exist
+        fs::create_dir_all(&config.cache_dir)?;
+        
+        let min_request_interval = Duration::from_nanos(1_000_000_000 / config.max_requests_per_second as u64);
+        
+        Ok(OptimizedTileCache {
+            cache_dir: config.cache_dir.clone(),
+            memory_cache: HashMap::new(),
+            last_request_time: Instant::now() - Duration::from_secs(1),
+            min_request_interval,
+            request_count: 0,
+            request_window_start: Instant::now(),
+        })
     }
     
-    fn get_or_fetch(&mut self, url: &str) -> Result<DynamicImage> {
-        if self.enabled {
-            if let Some(img) = self.cache.get(url) {
-                return Ok(img.clone());
+    fn get_tile(&mut self, tile_key: TileKey) -> Result<DynamicImage> {
+        // Check memory cache first
+        if let Some(img) = self.memory_cache.get(&tile_key) {
+            return Ok(img.clone());
+        }
+        
+        // Check disk cache
+        let cache_path = self.cache_dir.join(tile_key.cache_filename());
+        if cache_path.exists() {
+            match image::open(&cache_path) {
+                Ok(img) => {
+                    // Store in memory cache for faster access
+                    self.memory_cache.insert(tile_key, img.clone());
+                    return Ok(img);
+                },
+                Err(_) => {
+                    // Corrupted cache file, delete it
+                    let _ = fs::remove_file(&cache_path);
+                }
             }
         }
         
-        // Fetch tile
-        let resp = get(url)?.bytes()?;
-        let img = ImgReader::new(Cursor::new(resp))
+        // Need to fetch from network - apply rate limiting
+        self.apply_rate_limiting();
+        
+        // Fetch tile from Terrarium
+        let url = format!(
+            "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{}/{}/{}.png",
+            tile_key.z, tile_key.x, tile_key.y
+        );
+        
+        println!("Fetching tile: z={}, x={}, y={}", tile_key.z, tile_key.x, tile_key.y);
+        
+        let resp = get(&url)?.bytes()?;
+        let img = ImgReader::new(Cursor::new(&resp))
             .with_guessed_format()?
             .decode()?;
         
-        if self.enabled {
-            self.cache.insert(url.to_string(), img.clone());
+        // Save to disk cache
+        if let Err(e) = img.save_with_format(&cache_path, ImageFormat::Png) {
+            eprintln!("Warning: Failed to save tile to cache: {}", e);
         }
+        
+        // Store in memory cache
+        self.memory_cache.insert(tile_key, img.clone());
         
         Ok(img)
     }
+    
+    fn apply_rate_limiting(&mut self) {
+        let now = Instant::now();
+        
+        // Reset counter every second
+        if now.duration_since(self.request_window_start) >= Duration::from_secs(1) {
+            self.request_count = 0;
+            self.request_window_start = now;
+        }
+        
+        // Check if we need to wait
+        let time_since_last = now.duration_since(self.last_request_time);
+        if time_since_last < self.min_request_interval {
+            let sleep_duration = self.min_request_interval - time_since_last;
+            thread::sleep(sleep_duration);
+        }
+        
+        self.last_request_time = Instant::now();
+        self.request_count += 1;
+        
+        if self.request_count % 100 == 0 {
+            println!("Processed {} tile requests", self.request_count);
+        }
+    }
 }
 
-/// Convert lat/lon to tile coordinates and pixel offsets
-fn latlon_to_tile_pixel(lat: f64, lon: f64, zoom: u8) -> (u32, u32, u32, u32) {
+/// Convert lat/lon to tile coordinates at zoom level 15
+fn latlon_to_tile_coords(lat: f64, lon: f64, zoom: u8) -> (u32, u32, u32, u32) {
     let n = 2_f64.powi(zoom as i32);
     let lat_rad = lat.to_radians();
     
     let xtile = ((lon + 180.0) / 360.0 * n) as u32;
     let ytile = ((1.0 - lat_rad.tan().asinh() / std::f64::consts::PI) / 2.0 * n) as u32;
     
-    // Calculate pixel position within tile (tiles are typically 256x256)
+    // Calculate pixel position within 256x256 tile
     let tile_size = 256.0;
     let x_frac = (lon + 180.0) / 360.0 * n - xtile as f64;
     let y_frac = (1.0 - lat_rad.tan().asinh() / std::f64::consts::PI) / 2.0 * n - ytile as f64;
@@ -109,170 +198,172 @@ fn latlon_to_tile_pixel(lat: f64, lon: f64, zoom: u8) -> (u32, u32, u32, u32) {
     (xtile, ytile, xpixel.min(255), ypixel.min(255))
 }
 
-/// Fetch elevation from Terrarium DEM tiles
-fn fetch_terrarium_elevation(
-    lat: f64, 
-    lon: f64, 
-    zoom: u8, 
-    cache: &mut TileCache
-) -> Result<f64> {
-    // Compute tile coordinates
-    let (xtile, ytile, xpixel, ypixel) = latlon_to_tile_pixel(lat, lon, zoom);
-    
-    // Terrarium tile URL
-    let url = format!(
-        "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{}/{}/{}.png",
-        zoom, xtile, ytile
-    );
-    
-    // Fetch and decode tile
-    let img = cache.get_or_fetch(&url)?;
-    
-    // Get pixel RGB values
-    let pixel = img.get_pixel(xpixel, ypixel);
+/// Extract elevation from Terrarium tile at specific pixel
+fn extract_terrarium_elevation(img: &DynamicImage, x: u32, y: u32) -> f64 {
+    let pixel = img.get_pixel(x, y);
     let rgba = pixel.0;
     let (r, g, b) = (rgba[0] as u32, rgba[1] as u32, rgba[2] as u32);
     
     // Terrarium formula: elevation = (R * 256 + G + B/256) - 32768
-    let elevation = (r * 256 + g) as f64 + (b as f64 / 256.0) - 32768.0;
-    
-    Ok(elevation)
+    (r * 256 + g) as f64 + (b as f64 / 256.0) - 32768.0
 }
 
-/// Fetch elevation from Mapbox Terrain-RGB tiles (alternative)
-fn fetch_mapbox_terrain_elevation(
-    lat: f64, 
-    lon: f64, 
-    zoom: u8, 
-    cache: &mut TileCache
-) -> Result<f64> {
-    let (xtile, ytile, xpixel, ypixel) = latlon_to_tile_pixel(lat, lon, zoom);
+/// Get 100% terrain elevations for all coordinates
+pub fn get_terrain_elevations(
+    coordinates: &[(f64, f64, f64)], // (lat, lon, gps_elevation) - GPS elevation ignored
+    config: &TerrainConfig
+) -> Vec<f64> {
+    let mut cache = match OptimizedTileCache::new(config) {
+        Ok(cache) => cache,
+        Err(e) => {
+            eprintln!("Failed to initialize tile cache: {}. Cannot proceed without terrain data.", e);
+            return vec![];
+        }
+    };
     
-    // Note: Mapbox requires API key for production use
-    // This is just the formula - you'd need to replace with actual Mapbox URL + API key
-    let url = format!(
-        "https://api.mapbox.com/v4/mapbox.terrain-rgb/{}/{}/{}.png?access_token=YOUR_TOKEN",
-        zoom, xtile, ytile
-    );
+    let mut terrain_elevations = Vec::with_capacity(coordinates.len());
+    let mut unique_tiles_needed = std::collections::HashSet::new();
     
-    let img = cache.get_or_fetch(&url)?;
-    let pixel = img.get_pixel(xpixel, ypixel);
-    let rgba = pixel.0;
-    let (r, g, b) = (rgba[0] as u32, rgba[1] as u32, rgba[2] as u32);
+    // First pass: identify all unique tiles needed
+    for &(lat, lon, _) in coordinates {
+        let (xtile, ytile, _, _) = latlon_to_tile_coords(lat, lon, config.zoom_level);
+        unique_tiles_needed.insert(TileKey { z: config.zoom_level, x: xtile, y: ytile });
+    }
     
-    // Mapbox Terrain-RGB formula: elevation = -10000 + (R * 256² + G * 256 + B) * 0.1
-    let elevation = -10000.0 + (r * 256 * 256 + g * 256 + b) as f64 * 0.1;
+    println!("Processing {} coordinates across {} unique tiles (zoom {})", 
+             coordinates.len(), unique_tiles_needed.len(), config.zoom_level);
     
-    Ok(elevation)
-}
-
-/// Apply terrain-based elevation correction to GPS coordinates
-pub fn apply_terrain_correction(
-    coordinates: &[(f64, f64, f64)], // (lat, lon, gps_elevation)
-    config: &TerrainElevationConfig
-) -> Vec<(f64, f64, f64)> {
-    let mut cache = TileCache::new(config.enable_caching);
-    let mut corrected = Vec::with_capacity(coordinates.len());
-    
-    println!("Applying terrain-based elevation correction...");
-    
-    for (i, &(lat, lon, gps_elev)) in coordinates.iter().enumerate() {
-        if i % 100 == 0 {
-            println!("Processing point {} of {}", i, coordinates.len());
+    // Second pass: get terrain elevation for each coordinate
+    for (i, &(lat, lon, _gps_elev)) in coordinates.iter().enumerate() {
+        if i % 500 == 0 {
+            println!("Processing coordinate {} of {}", i, coordinates.len());
         }
         
-        match fetch_terrarium_elevation(lat, lon, config.zoom_level, &mut cache) {
-            Ok(terrain_elev) => {
-                // Check if terrain elevation is reasonable compared to GPS
-                let elevation_diff = (terrain_elev - gps_elev).abs();
-                
-                if elevation_diff <= config.max_terrain_gps_diff_m {
-                    // Blend GPS and terrain elevations
-                    let corrected_elev = config.gps_terrain_blend_factor * gps_elev + 
-                                       (1.0 - config.gps_terrain_blend_factor) * terrain_elev;
-                    corrected.push((lat, lon, corrected_elev));
-                } else if config.fallback_to_gps {
-                    // Large difference - trust GPS (might be indoor/urban canyon)
-                    corrected.push((lat, lon, gps_elev));
-                } else {
-                    // Use terrain elevation anyway
-                    corrected.push((lat, lon, terrain_elev));
-                }
+        let (xtile, ytile, xpixel, ypixel) = latlon_to_tile_coords(lat, lon, config.zoom_level);
+        let tile_key = TileKey { z: config.zoom_level, x: xtile, y: ytile };
+        
+        match cache.get_tile(tile_key) {
+            Ok(img) => {
+                let terrain_elev = extract_terrarium_elevation(&img, xpixel, ypixel);
+                terrain_elevations.push(terrain_elev);
             },
-            Err(_) => {
-                // Terrain fetch failed - use GPS elevation
-                if config.fallback_to_gps {
-                    corrected.push((lat, lon, gps_elev));
-                } else {
-                    // Skip this point or interpolate
-                    corrected.push((lat, lon, gps_elev));
+            Err(e) => {
+                if i < 10 { // Only log first few errors to avoid spam
+                    eprintln!("Failed to fetch tile for coordinate {}: {}", i, e);
                 }
+                // Use a reasonable fallback elevation (sea level)
+                terrain_elevations.push(0.0);
             }
         }
     }
     
-    println!("Terrain correction complete!");
-    corrected
+    println!("Terrain elevation extraction complete! Used {} unique tiles for {} coordinates", 
+             unique_tiles_needed.len(), coordinates.len());
+    terrain_elevations
 }
 
-/// Simple terrain-based smoothing using corrected elevations
-pub fn terrain_based_smooth(
-    distances: &[f64],
-    coordinates: &[(f64, f64, f64)], // (lat, lon, gps_elevation)
-    config: &TerrainElevationConfig
+/// Rolling distance-based smoothing
+fn rolling_distance_smooth(
+    distances: &[f64], 
+    elevations: &[f64], 
+    window_meters: f64
 ) -> Vec<f64> {
-    // Apply terrain correction first
-    let corrected_coords = apply_terrain_correction(coordinates, config);
-    
-    // Extract corrected elevations
-    let corrected_elevations: Vec<f64> = corrected_coords.iter()
-        .map(|(_, _, elev)| *elev)
-        .collect();
-    
-    // Apply light smoothing to the terrain-corrected data
-    light_smooth(&corrected_elevations, 3)
-}
-
-/// Light smoothing for terrain-corrected data
-fn light_smooth(elevations: &[f64], window: usize) -> Vec<f64> {
-    if elevations.len() < window {
+    if elevations.len() < 3 || window_meters <= 0.0 {
         return elevations.to_vec();
     }
     
-    let mut result = Vec::with_capacity(elevations.len());
+    let mut smoothed = Vec::with_capacity(elevations.len());
     
     for i in 0..elevations.len() {
-        let start = if i >= window / 2 { i - window / 2 } else { 0 };
-        let end = if i + window / 2 < elevations.len() { i + window / 2 } else { elevations.len() - 1 };
+        let current_dist = distances[i];
+        let half_window = window_meters / 2.0;
         
-        let sum: f64 = elevations[start..=end].iter().sum();
-        let count = end - start + 1;
-        result.push(sum / count as f64);
+        // Find points within the distance window
+        let mut window_elevations = Vec::new();
+        let mut window_weights = Vec::new();
+        
+        for j in 0..elevations.len() {
+            let point_dist = distances[j];
+            let dist_diff = (point_dist - current_dist).abs();
+            
+            if dist_diff <= half_window {
+                // Weight by distance (closer points have more influence)
+                let weight = if dist_diff == 0.0 {
+                    1.0
+                } else {
+                    1.0 / (1.0 + dist_diff / 20.0) // Slightly less aggressive weight decay
+                };
+                
+                window_elevations.push(elevations[j]);
+                window_weights.push(weight);
+            }
+        }
+        
+        // Calculate weighted average
+        if !window_elevations.is_empty() {
+            let weighted_sum: f64 = window_elevations.iter()
+                .zip(window_weights.iter())
+                .map(|(elev, weight)| elev * weight)
+                .sum();
+            let weight_sum: f64 = window_weights.iter().sum();
+            
+            smoothed.push(weighted_sum / weight_sum);
+        } else {
+            // Fallback to original elevation if no points in window
+            smoothed.push(elevations[i]);
+        }
     }
     
-    result
+    smoothed
 }
 
-/// Convenience functions with different accuracy levels
+/// Raw 100% terrain elevation data - NO smoothing applied
 pub fn terrain_smooth_high_accuracy(
-    distances: &[f64],
+    _distances: &[f64], // Not used for raw data
     coordinates: &[(f64, f64, f64)]
 ) -> Vec<f64> {
-    terrain_based_smooth(distances, coordinates, &TerrainElevationConfig::high_accuracy())
+    let config = TerrainConfig::raw();
+    let terrain_elevations = get_terrain_elevations(coordinates, &config);
+    
+    if terrain_elevations.is_empty() {
+        // Fallback to GPS elevations if terrain failed
+        return coordinates.iter().map(|(_, _, gps_elev)| *gps_elev).collect();
+    }
+    
+    // Return raw terrain data without any smoothing
+    terrain_elevations
 }
 
-pub fn terrain_smooth_moderate(
-    distances: &[f64],
-    coordinates: &[(f64, f64, f64)]
-) -> Vec<f64> {
-    terrain_based_smooth(distances, coordinates, &TerrainElevationConfig::default())
-}
-
+/// 100% terrain elevation with 150m rolling smoothing
 pub fn terrain_smooth_conservative(
     distances: &[f64],
     coordinates: &[(f64, f64, f64)]
 ) -> Vec<f64> {
-    terrain_based_smooth(distances, coordinates, &TerrainElevationConfig::conservative())
+    let config = TerrainConfig::smooth_150m();
+    let terrain_elevations = get_terrain_elevations(coordinates, &config);
+    
+    if terrain_elevations.is_empty() {
+        // Fallback to GPS elevations if terrain failed
+        return coordinates.iter().map(|(_, _, gps_elev)| *gps_elev).collect();
+    }
+    
+    rolling_distance_smooth(distances, &terrain_elevations, config.smoothing_window_meters)
+}
+
+/// 100% terrain elevation with 300m rolling smoothing
+pub fn terrain_smooth_moderate(
+    distances: &[f64],
+    coordinates: &[(f64, f64, f64)]
+) -> Vec<f64> {
+    let config = TerrainConfig::smooth_300m();
+    let terrain_elevations = get_terrain_elevations(coordinates, &config);
+    
+    if terrain_elevations.is_empty() {
+        // Fallback to GPS elevations if terrain failed
+        return coordinates.iter().map(|(_, _, gps_elev)| *gps_elev).collect();
+    }
+    
+    rolling_distance_smooth(distances, &terrain_elevations, config.smoothing_window_meters)
 }
 
 pub fn calculate_terrain_elevation_gain_loss(elevations: &[f64]) -> (f64, f64) {
@@ -296,44 +387,37 @@ mod tests {
     use super::*;
     
     #[test]
-    fn test_tile_calculation() {
-        // Test known coordinates
-        let (xtile, ytile, xpix, ypix) = latlon_to_tile_pixel(52.5, 13.4, 12); // Berlin
+    fn test_tile_calculation_zoom15() {
+        // Test known coordinates at zoom 15
+        let (xtile, ytile, xpix, ypix) = latlon_to_tile_coords(52.5, 13.4, 15); // Berlin
         assert!(xtile > 0 && ytile > 0);
         assert!(xpix <= 255 && ypix <= 255);
     }
     
     #[test]
-    fn test_elevation_calculation() {
-        // Test Terrarium formula with known values
-        let r = 100u32;
-        let g = 50u32; 
-        let b = 25u32;
-        let elevation = (r * 256 + g) as f64 + (b as f64 / 256.0) - 32768.0;
+    fn test_new_smoothing_windows() {
+        let conservative_config = TerrainConfig::smooth_150m();
+        assert_eq!(conservative_config.smoothing_window_meters, 150.0);
         
-        // Should be reasonable elevation value
-        assert!(elevation > -1000.0 && elevation < 10000.0);
+        let moderate_config = TerrainConfig::smooth_300m();
+        assert_eq!(moderate_config.smoothing_window_meters, 300.0);
+        
+        let raw_config = TerrainConfig::raw();
+        assert_eq!(raw_config.smoothing_window_meters, 0.0);
+    }
+    
+    #[test]
+    fn test_rolling_smooth_large_windows() {
+        let distances = vec![0.0, 50.0, 100.0, 150.0, 200.0, 250.0, 300.0];
+        let elevations = vec![100.0, 110.0, 90.0, 120.0, 105.0, 95.0, 115.0];
+        
+        let smoothed_150 = rolling_distance_smooth(&distances, &elevations, 150.0);
+        let smoothed_300 = rolling_distance_smooth(&distances, &elevations, 300.0);
+        
+        assert_eq!(smoothed_150.len(), elevations.len());
+        assert_eq!(smoothed_300.len(), elevations.len());
+        
+        // 300m smoothing should generally be smoother than 150m
+        // (though this isn't guaranteed for all data patterns)
     }
 }
-
-/// Error handling for terrain elevation operations
-#[derive(Debug)]
-pub enum TerrainError {
-    NetworkError(String),
-    InvalidCoordinates,
-    TileNotFound,
-    DecodingError(String),
-}
-
-impl std::fmt::Display for TerrainError {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        match self {
-            TerrainError::NetworkError(msg) => write!(f, "Network error: {}", msg),
-            TerrainError::InvalidCoordinates => write!(f, "Invalid coordinates"),
-            TerrainError::TileNotFound => write!(f, "DEM tile not found"),
-            TerrainError::DecodingError(msg) => write!(f, "Image decoding error: {}", msg),
-        }
-    }
-}
-
-impl std::error::Error for TerrainError {}

@@ -1,6 +1,6 @@
 /// Fixed Advanced Smoothing - Should only REDUCE elevation gain, never increase
-use crate::custom_smoother::ElevationData;
-use crate::enhanced_combo_smoother::enhanced_universal_smooth_conservative;
+
+
 
 #[derive(Debug, Clone)]
 pub struct AdvancedSmoothingConfig {
@@ -252,3 +252,4 @@ mod tests {
         assert!(cleaned[2] > 100.0);
     }
 }
+
