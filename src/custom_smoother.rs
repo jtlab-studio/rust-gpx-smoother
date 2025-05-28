@@ -307,57 +307,41 @@ impl ElevationData {
         println!("DEBUG [DISTBASED]: Applied deadband filtering with {:.1}m threshold", threshold_meters);
     }
     
-    fn apply_distance_based_processing(&mut self) {
-        println!("DEBUG [DISTBASED]: Starting distance-based uniform processing...");
-        
+        fn apply_distance_based_processing(&mut self) {
         let original_gain = self.accumulated_ascent.last().unwrap_or(&0.0).clone();
         
-        // Step 1: Resample to uniform 10m grid
-        let (uniform_distances, uniform_elevations) = self.resample_to_uniform_distance(10.0);
+        // IMPROVED: Better terrain classification
+        let total_distance_km = self.cumulative_distance.last().unwrap_or(&0.0) / 1000.0;
+        let gain_per_km = if total_distance_km > 0.0 { original_gain / total_distance_km } else { 0.0 };
         
-        if uniform_elevations.is_empty() {
-            println!("DEBUG [DISTBASED]: Failed to resample data, falling back to original");
-            return;
-        }
+        // CHANGE: More nuanced terrain thresholds
+        let terrain_type = if gain_per_km < 12.0 {
+            "flat"
+        } else if gain_per_km < 30.0 {
+            "rolling"  
+        } else if gain_per_km < 60.0 {
+            "hilly"
+        } else {
+            "mountainous"
+        };
         
-        // Step 2: Calculate uniform altitude changes
-        let mut uniform_altitude_changes = vec![0.0];
-        for i in 1..uniform_elevations.len() {
-            uniform_altitude_changes.push(uniform_elevations[i] - uniform_elevations[i - 1]);
-        }
+        // CHANGE: Terrain-adaptive smoothing parameters
+        let (smoothing_window, max_gradient, spike_threshold) = match terrain_type {
+            "flat" => (90, 6.0, 3.0),           // Aggressive smoothing for flat
+            "rolling" => (45, 12.0, 4.0),       // Moderate for rolling
+            "hilly" => (21, 18.0, 6.0),         // Conservative for hilly
+            "mountainous" => (15, 25.0, 8.0),   // Minimal smoothing for mountains
+            _ => (45, 12.0, 4.0),
+        };
         
-        // Step 3: Median filter for spike removal (3-point window = 30m)
-        let median_smoothed = Self::median_filter(&uniform_elevations, 3);
-        println!("DEBUG [DISTBASED]: Applied median filter (30m window)");
+        println!("DEBUG [DISTBASED]: Terrain: {}, Gain/km: {:.1}m, Window: {}, MaxGrad: {}%, SpikeThresh: {}m", 
+                 terrain_type, gain_per_km, smoothing_window, max_gradient, spike_threshold);
         
-        // Step 4: Gaussian smoothing (20-point window = 200m)
-        let gaussian_smoothed = Self::gaussian_smooth(&median_smoothed, 20);
-        println!("DEBUG [DISTBASED]: Applied Gaussian smoothing (200m window)");
-        
-        // Step 5: Recalculate altitude changes from smoothed elevations
-        let mut smoothed_altitude_changes = vec![0.0];
-        for i in 1..gaussian_smoothed.len() {
-            smoothed_altitude_changes.push(gaussian_smoothed[i] - gaussian_smoothed[i - 1]);
-        }
-        
-        // Step 6: Replace our data with processed uniform data
-        self.enhanced_altitude = gaussian_smoothed;
-        self.cumulative_distance = uniform_distances;
-        self.altitude_change = smoothed_altitude_changes;
-        
-        // Recalculate distance changes for uniform grid (all 10m)
-        self.distance_change = vec![10.0; self.altitude_change.len()];
-        self.distance_change[0] = self.cumulative_distance[0]; // First segment
-        
-        // Step 7: Apply deadband filtering (3m threshold)
-        self.apply_deadband_filtering(3.0);
-        
-        // Step 8: Recalculate everything
-        self.calculate_gradients();
-        self.recalculate_accumulated_values_after_smoothing();
+        // CHANGE: Apply terrain-specific processing
+        self.apply_terrain_adaptive_smoothing(smoothing_window, max_gradient, spike_threshold);
         
         let processed_gain = self.accumulated_ascent.last().unwrap_or(&0.0).clone();
-        println!("DEBUG [DISTBASED]: Distance-based processing complete - Original: {:.1}m, Processed: {:.1}m", 
+        println!("DEBUG [DISTBASED]: Processing complete - Original: {:.1}m, Processed: {:.1}m", 
                  original_gain, processed_gain);
     }
     
@@ -715,8 +699,7 @@ impl ElevationData {
         self.recalculate_accumulated_values_after_smoothing();
         
         let processed_gain = self.accumulated_ascent.last().unwrap_or(&0.0).clone();
-        println!("DEBUG [ADAPTIVE-DISTBASED]: Processing complete - Original: {:.1}m, Processed: {:.1}m", 
-                 original_gain, processed_gain);
+        // println!("DEBUG [ADAPTIVE-DISTBASED]: Processing complete - Original: {:.1}m, Processed: {:.1}m", ); // Commented out debug line
     }
     
     /// Adaptive deadband filtering with terrain-specific threshold
@@ -768,6 +751,118 @@ impl ElevationData {
         
         self.altitude_change = filtered_changes;
         println!("DEBUG [ADAPTIVE-DISTBASED]: Applied adaptive deadband filtering with {:.1}m threshold", threshold_meters);
+    }
+    
+    fn apply_terrain_adaptive_smoothing(&mut self, window: usize, max_gradient: f64, spike_threshold: f64) {
+        if self.altitude_change.is_empty() {
+            return;
+        }
+        
+        // IMPROVEMENT: Smart spike detection for hilly terrain
+        let mut smoothed_changes = self.altitude_change.clone();
+        
+        // Step 1: Remove obvious GPS spikes (sudden jumps)
+        for i in 1..smoothed_changes.len()-1 {
+            let prev_change = smoothed_changes[i-1];
+            let curr_change = smoothed_changes[i];
+            let next_change = smoothed_changes[i+1];
+            
+            // CHANGE: Detect spikes based on terrain-specific threshold
+            if curr_change.abs() > spike_threshold && 
+               (curr_change > 0.0) != (prev_change > 0.0) && 
+               (curr_change > 0.0) != (next_change > 0.0) {
+                // This looks like a GPS spike - interpolate
+                smoothed_changes[i] = (prev_change + next_change) / 2.0;
+            }
+        }
+        
+        // Step 2: Apply rolling window smoothing (terrain-adaptive)
+        let mut windowed_changes = smoothed_changes.clone();
+        for i in 0..windowed_changes.len() {
+            let start = if i >= window/2 { i - window/2 } else { 0 };
+            let end = if i + window/2 < windowed_changes.len() { i + window/2 } else { windowed_changes.len() - 1 };
+            
+            let window_sum: f64 = smoothed_changes[start..=end].iter().sum();
+            let window_count = end - start + 1;
+            windowed_changes[i] = window_sum / window_count as f64;
+        }
+        
+        // Step 3: CHANGE - Gradient capping with elevation gain preservation
+        let original_total_gain: f64 = self.altitude_change.iter()
+            .filter(|&&x| x > 0.0)
+            .sum();
+            
+        for i in 0..windowed_changes.len() {
+            if self.distance_change[i] > 0.0 {
+                let gradient_percent = (windowed_changes[i] / self.distance_change[i]) * 100.0;
+                
+                // IMPROVEMENT: Only cap if gradient is unreasonably high
+                if gradient_percent > max_gradient {
+                    windowed_changes[i] = max_gradient * self.distance_change[i] / 100.0;
+                } else if gradient_percent < -max_gradient {
+                    windowed_changes[i] = -max_gradient * self.distance_change[i] / 100.0;
+                }
+            }
+        }
+        
+        // Step 4: CRITICAL - Preserve total elevation gain for hilly routes
+        let processed_total_gain: f64 = windowed_changes.iter()
+            .filter(|&&x| x > 0.0)
+            .sum();
+            
+        // CHANGE: If we lost too much elevation gain, scale it back up
+        if processed_total_gain < original_total_gain * 0.75 && original_total_gain > 500.0 {
+            let scaling_factor = (original_total_gain * 0.85) / processed_total_gain;
+            for change in &mut windowed_changes {
+                if *change > 0.0 {
+                    *change *= scaling_factor;
+                }
+            }
+        }
+        
+        // Apply the smoothed changes
+        self.altitude_change = windowed_changes;
+        self.recalculate_derived_values();
+    }
+    
+    fn recalculate_derived_values(&mut self) {
+        // Recalculate gradients
+        self.gradient_percent.clear();
+        for i in 0..self.altitude_change.len() {
+            if self.distance_change[i] == 0.0 {
+                self.gradient_percent.push(0.0);
+            } else {
+                self.gradient_percent.push(
+                    (self.altitude_change[i] / self.distance_change[i]) * 100.0
+                );
+            }
+        }
+        
+        // Recalculate ascent/descent
+        self.ascent.clear();
+        self.descent.clear();
+        for &change in &self.altitude_change {
+            if change > 0.0 {
+                self.ascent.push(change);
+                self.descent.push(0.0);
+            } else {
+                self.ascent.push(0.0);
+                self.descent.push(change);
+            }
+        }
+        
+        // Recalculate accumulated values
+        self.accumulated_ascent.clear();
+        self.accumulated_descent.clear();
+        let mut ascent_acc = 0.0;
+        let mut descent_acc = 0.0;
+        
+        for i in 0..self.ascent.len() {
+            ascent_acc += self.ascent[i];
+            descent_acc += self.descent[i].abs();
+            self.accumulated_ascent.push(ascent_acc);
+            self.accumulated_descent.push(descent_acc);
+        }
     }
 }
 
