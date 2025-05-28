@@ -1,8 +1,8 @@
-C:\Users\Dzhu\Documents\GitHub\rust-gpx-smoother\target\release\deps\rust_gpx_smoother.exe: src\main.rs src\custom_smoother.rs src\simple_smoother.rs src\smart_spike_removal.rs
+C:\Users\Dzhu\Documents\GitHub\rust-gpx-smoother\target\release\deps\rust_gpx_smoother.exe: src\main.rs src\custom_smoother.rs src\improved_scoring.rs src\outlier_analysis.rs
 
-C:\Users\Dzhu\Documents\GitHub\rust-gpx-smoother\target\release\deps\rust_gpx_smoother.d: src\main.rs src\custom_smoother.rs src\simple_smoother.rs src\smart_spike_removal.rs
+C:\Users\Dzhu\Documents\GitHub\rust-gpx-smoother\target\release\deps\rust_gpx_smoother.d: src\main.rs src\custom_smoother.rs src\improved_scoring.rs src\outlier_analysis.rs
 
 src\main.rs:
 src\custom_smoother.rs:
-src\simple_smoother.rs:
-src\smart_spike_removal.rs:
+src\improved_scoring.rs:
+src\outlier_analysis.rs:

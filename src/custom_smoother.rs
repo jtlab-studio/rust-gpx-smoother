@@ -698,7 +698,10 @@ impl ElevationData {
         self.calculate_gradients();
         self.recalculate_accumulated_values_after_smoothing();
         
-        let processed_gain = self.accumulated_ascent.last().unwrap_or(&0.0).clone();
+        let _processed_gain = self.accumulated_ascent.last().unwrap_or(&0.0).clone();
+
+
+
         // println!("DEBUG [ADAPTIVE-DISTBASED]: Processing complete - Original: {:.1}m, Processed: {:.1}m", ); // Commented out debug line
     }
     
