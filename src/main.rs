@@ -9,14 +9,11 @@ use serde::Serialize;
 use gpx::Time;
 
 mod custom_smoother;
-mod incline_analyzer;
 mod simple_smoother;
 mod smart_spike_removal;
 
 use custom_smoother::{create_custom_original, create_custom_distbased_adaptive, ElevationData, SmoothingVariant};
-use simple_smoother::{simple_spike_removal_only, calculate_simple_elevation_gain_loss};
-use incline_analyzer::{analyze_inclines_default};
-use smart_spike_removal::{smart_spike_distbased, GpsQualityMetrics};
+use smart_spike_removal::GpsQualityMetrics;
 
 #[derive(Debug, Serialize)]
 struct GpxAnalysis {
@@ -25,27 +22,47 @@ struct GpxAnalysis {
     raw_elevation_gain_m: u32,
     average_time_interval_seconds: u32,
     custom_original_elevation_gain_m: u32,
-    custom_distbased_elevation_gain_m: u32,
-    simple_spike_only_elevation_gain_m: u32,
-    spike_distbased_elevation_gain_m: u32,
-    spike_original_elevation_gain_m: u32,
-    smart_spike_distbased_elevation_gain_m: u32,
+    custom_distbased_10m_elevation_gain_m: u32,
+    distbased_1m_interval_elevation_gain_m: u32,
+    distbased_1_5m_interval_elevation_gain_m: u32,
+    distbased_2m_interval_elevation_gain_m: u32,
+    distbased_2_5m_interval_elevation_gain_m: u32,
+    distbased_3m_interval_elevation_gain_m: u32,
+    distbased_3_5m_interval_elevation_gain_m: u32,
+    distbased_4m_interval_elevation_gain_m: u32,
+    distbased_4_5m_interval_elevation_gain_m: u32,
+    distbased_5m_interval_elevation_gain_m: u32,
+    distbased_5_5m_interval_elevation_gain_m: u32,
+    distbased_6m_interval_elevation_gain_m: u32,
+    distbased_6_5m_interval_elevation_gain_m: u32,
+    distbased_7m_interval_elevation_gain_m: u32,
+    distbased_12m_interval_elevation_gain_m: u32,
+    distbased_15m_interval_elevation_gain_m: u32,
+    distbased_20m_interval_elevation_gain_m: u32,
+    distbased_30m_interval_elevation_gain_m: u32,
+    distbased_50m_interval_elevation_gain_m: u32,
     official_elevation_gain_m: u32,
-    distbased_vs_official_diff_m: i32,
-    spike_distbased_vs_official_diff_m: i32,
-    spike_original_vs_official_diff_m: i32,
-    smart_vs_official_diff_m: i32,
+    original_accuracy_percent: f32,
+    distbased_10m_accuracy_percent: f32,
+    distbased_1m_accuracy_percent: f32,
+    distbased_1_5m_accuracy_percent: f32,
+    distbased_2m_accuracy_percent: f32,
+    distbased_2_5m_accuracy_percent: f32,
+    distbased_3m_accuracy_percent: f32,
+    distbased_3_5m_accuracy_percent: f32,
+    distbased_4m_accuracy_percent: f32,
+    distbased_4_5m_accuracy_percent: f32,
+    distbased_5m_accuracy_percent: f32,
+    distbased_5_5m_accuracy_percent: f32,
+    distbased_6m_accuracy_percent: f32,
+    distbased_6_5m_accuracy_percent: f32,
+    distbased_7m_accuracy_percent: f32,
+    distbased_12m_accuracy_percent: f32,
+    distbased_15m_accuracy_percent: f32,
+    distbased_20m_accuracy_percent: f32,
+    distbased_30m_accuracy_percent: f32,
+    distbased_50m_accuracy_percent: f32,
     gps_quality_score: f32,
-    longest_incline_length_km: f32,
-    longest_incline_gain_m: u32,
-    longest_incline_grade_percent: f32,
-    longest_decline_length_km: f32,
-    longest_decline_loss_m: u32,
-    longest_decline_grade_percent: f32,
-    total_inclines_count: u32,
-    total_declines_count: u32,
-    climbing_percentage: f32,
-    descending_percentage: f32,
 }
 
 fn get_official_elevation_gain(filename: &str) -> u32 {
@@ -128,30 +145,21 @@ fn get_official_elevation_gain(filename: &str) -> u32 {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let gpx_folder = r"C:\Users\Dzhu\Documents\GPX Files";
-    let output_path = Path::new(gpx_folder).join("smart_spike_analysis.csv");
+    let output_path = Path::new(gpx_folder).join("comprehensive_granularity_analysis.csv");
     
-    println!("🔧 SMART SPIKE + HYBRID SMOOTHER ANALYSIS");
-    println!("==========================================");
-    println!("📊 SMOOTHING METHODS:");
+    println!("🔧 COMPREHENSIVE DISTANCE GRANULARITY ANALYSIS");
+    println!("==============================================");
+    println!("📊 COMPLETE DISTANCE-BASED PROCESSING INTERVALS:");
     println!("1. Custom Original: Proven adaptive method");
-    println!("2. Custom DistBased: Terrain-aware processing");
-    println!("3. Simple Spike-Only: GPS spike removal (100% raw after)");
-    println!("4. Spike→DistBased: Spike removal + DistBased processing");
-    println!("5. Spike→Original: Spike removal + Original processing");
-    println!("6. 🆕 SMART Spike→DistBased: GPS quality analysis + selective spike removal");
+    println!("2. DistBased 10m: Current baseline (terrain-aware)");
+    println!("3. 🔬 Ultra-Fine: 1m, 1.5m, 2m, 2.5m");
+    println!("4. 🔬 Fine: 3m, 3.5m, 4m, 4.5m");
+    println!("5. 🔬 Medium: 5m, 5.5m, 6m, 6.5m, 7m");
+    println!("6. 🔬 Coarse: 12m, 15m, 20m, 30m, 50m");
     println!();
-    println!("🏔️  INCLINE ANALYSIS:");
-    println!("• Longest incline/decline detection");
-    println!("• Grade analysis and climbing statistics");
-    println!();
-    println!("🎯 GPS QUALITY ANALYSIS:");
-    println!("• Elevation noise ratio detection");
-    println!("• GPS spike counting and assessment");
-    println!("• Time interval variance analysis");
-    println!("• Smart decision making for spike removal");
-    println!();
+    println!("🎯 GOAL: Find absolute optimal granularity across full spectrum");
     println!("📈 Output: {}", output_path.display());
-    println!("==========================================");
+    println!("==============================================");
     
     let mut results = Vec::new();
     
@@ -189,27 +197,47 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "Raw Elevation Gain (m)",
         "Average Time Interval (seconds)",
         "Custom Original Elevation Gain (m)",
-        "Custom DistBased Elevation Gain (m)",
-        "Simple Spike Only Elevation Gain (m)",
-        "Spike DistBased Elevation Gain (m)",
-        "Spike Original Elevation Gain (m)",
-        "Smart Spike DistBased Elevation Gain (m)",
+        "Custom DistBased 10m Elevation Gain (m)",
+        "DistBased 1m Interval Elevation Gain (m)",
+        "DistBased 1.5m Interval Elevation Gain (m)",
+        "DistBased 2m Interval Elevation Gain (m)",
+        "DistBased 2.5m Interval Elevation Gain (m)",
+        "DistBased 3m Interval Elevation Gain (m)",
+        "DistBased 3.5m Interval Elevation Gain (m)",
+        "DistBased 4m Interval Elevation Gain (m)",
+        "DistBased 4.5m Interval Elevation Gain (m)",
+        "DistBased 5m Interval Elevation Gain (m)",
+        "DistBased 5.5m Interval Elevation Gain (m)",
+        "DistBased 6m Interval Elevation Gain (m)",
+        "DistBased 6.5m Interval Elevation Gain (m)",
+        "DistBased 7m Interval Elevation Gain (m)",
+        "DistBased 12m Interval Elevation Gain (m)",
+        "DistBased 15m Interval Elevation Gain (m)",
+        "DistBased 20m Interval Elevation Gain (m)",
+        "DistBased 30m Interval Elevation Gain (m)",
+        "DistBased 50m Interval Elevation Gain (m)",
         "Official Elevation Gain (m)",
-        "DistBased vs Official Diff (m)",
-        "Spike DistBased vs Official Diff (m)",
-        "Spike Original vs Official Diff (m)",
-        "Smart vs Official Diff (m)",
+        "Original Accuracy %",
+        "DistBased 10m Accuracy %",
+        "DistBased 1m Accuracy %",
+        "DistBased 1.5m Accuracy %",
+        "DistBased 2m Accuracy %",
+        "DistBased 2.5m Accuracy %",
+        "DistBased 3m Accuracy %",
+        "DistBased 3.5m Accuracy %",
+        "DistBased 4m Accuracy %",
+        "DistBased 4.5m Accuracy %",
+        "DistBased 5m Accuracy %",
+        "DistBased 5.5m Accuracy %",
+        "DistBased 6m Accuracy %",
+        "DistBased 6.5m Accuracy %",
+        "DistBased 7m Accuracy %",
+        "DistBased 12m Accuracy %",
+        "DistBased 15m Accuracy %",
+        "DistBased 20m Accuracy %",
+        "DistBased 30m Accuracy %",
+        "DistBased 50m Accuracy %",
         "GPS Quality Score",
-        "Longest Incline Length (km)",
-        "Longest Incline Gain (m)",
-        "Longest Incline Grade (%)",
-        "Longest Decline Length (km)",
-        "Longest Decline Loss (m)",
-        "Longest Decline Grade (%)",
-        "Total Inclines Count",
-        "Total Declines Count",
-        "Climbing Percentage (%)",
-        "Descending Percentage (%)",
     ])?;
     
     for result in &results {
@@ -219,112 +247,136 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             &result.raw_elevation_gain_m.to_string(),
             &result.average_time_interval_seconds.to_string(),
             &result.custom_original_elevation_gain_m.to_string(),
-            &result.custom_distbased_elevation_gain_m.to_string(),
-            &result.simple_spike_only_elevation_gain_m.to_string(),
-            &result.spike_distbased_elevation_gain_m.to_string(),
-            &result.spike_original_elevation_gain_m.to_string(),
-            &result.smart_spike_distbased_elevation_gain_m.to_string(),
+            &result.custom_distbased_10m_elevation_gain_m.to_string(),
+            &result.distbased_1m_interval_elevation_gain_m.to_string(),
+            &result.distbased_1_5m_interval_elevation_gain_m.to_string(),
+            &result.distbased_2m_interval_elevation_gain_m.to_string(),
+            &result.distbased_2_5m_interval_elevation_gain_m.to_string(),
+            &result.distbased_3m_interval_elevation_gain_m.to_string(),
+            &result.distbased_3_5m_interval_elevation_gain_m.to_string(),
+            &result.distbased_4m_interval_elevation_gain_m.to_string(),
+            &result.distbased_4_5m_interval_elevation_gain_m.to_string(),
+            &result.distbased_5m_interval_elevation_gain_m.to_string(),
+            &result.distbased_5_5m_interval_elevation_gain_m.to_string(),
+            &result.distbased_6m_interval_elevation_gain_m.to_string(),
+            &result.distbased_6_5m_interval_elevation_gain_m.to_string(),
+            &result.distbased_7m_interval_elevation_gain_m.to_string(),
+            &result.distbased_12m_interval_elevation_gain_m.to_string(),
+            &result.distbased_15m_interval_elevation_gain_m.to_string(),
+            &result.distbased_20m_interval_elevation_gain_m.to_string(),
+            &result.distbased_30m_interval_elevation_gain_m.to_string(),
+            &result.distbased_50m_interval_elevation_gain_m.to_string(),
             &result.official_elevation_gain_m.to_string(),
-            &result.distbased_vs_official_diff_m.to_string(),
-            &result.spike_distbased_vs_official_diff_m.to_string(),
-            &result.spike_original_vs_official_diff_m.to_string(),
-            &result.smart_vs_official_diff_m.to_string(),
+            &format!("{:.1}", result.original_accuracy_percent),
+            &format!("{:.1}", result.distbased_10m_accuracy_percent),
+            &format!("{:.1}", result.distbased_1m_accuracy_percent),
+            &format!("{:.1}", result.distbased_1_5m_accuracy_percent),
+            &format!("{:.1}", result.distbased_2m_accuracy_percent),
+            &format!("{:.1}", result.distbased_2_5m_accuracy_percent),
+            &format!("{:.1}", result.distbased_3m_accuracy_percent),
+            &format!("{:.1}", result.distbased_3_5m_accuracy_percent),
+            &format!("{:.1}", result.distbased_4m_accuracy_percent),
+            &format!("{:.1}", result.distbased_4_5m_accuracy_percent),
+            &format!("{:.1}", result.distbased_5m_accuracy_percent),
+            &format!("{:.1}", result.distbased_5_5m_accuracy_percent),
+            &format!("{:.1}", result.distbased_6m_accuracy_percent),
+            &format!("{:.1}", result.distbased_6_5m_accuracy_percent),
+            &format!("{:.1}", result.distbased_7m_accuracy_percent),
+            &format!("{:.1}", result.distbased_12m_accuracy_percent),
+            &format!("{:.1}", result.distbased_15m_accuracy_percent),
+            &format!("{:.1}", result.distbased_20m_accuracy_percent),
+            &format!("{:.1}", result.distbased_30m_accuracy_percent),
+            &format!("{:.1}", result.distbased_50m_accuracy_percent),
             &result.gps_quality_score.to_string(),
-            &result.longest_incline_length_km.to_string(),
-            &result.longest_incline_gain_m.to_string(),
-            &result.longest_incline_grade_percent.to_string(),
-            &result.longest_decline_length_km.to_string(),
-            &result.longest_decline_loss_m.to_string(),
-            &result.longest_decline_grade_percent.to_string(),
-            &result.total_inclines_count.to_string(),
-            &result.total_declines_count.to_string(),
-            &result.climbing_percentage.to_string(),
-            &result.descending_percentage.to_string(),
         ])?;
     }
     
     wtr.flush()?;
     
-    println!("\n🎉 ANALYSIS COMPLETE!");
+    println!("\n🎉 COMPREHENSIVE GRANULARITY ANALYSIS COMPLETE!");
     println!("📊 Results saved to: {}", output_path.display());
     println!("📁 Processed {} GPX files", results.len());
     
-    // Print comparison summaries
-    println!("\n🏆 SMART SPIKE ACCURACY COMPARISON:");
-    let mut smart_better = 0;
-    let mut old_better = 0;
+    // Print comprehensive granularity comparison summaries
+    println!("\n🏆 COMPREHENSIVE DISTANCE GRANULARITY ACCURACY COMPARISON:");
+    let mut interval_winners = [0; 20]; // Track winners for all intervals
+    let interval_names = ["1m", "1.5m", "2m", "2.5m", "3m", "3.5m", "4m", "4.5m", "5m", "5.5m", 
+                         "6m", "6.5m", "7m", "10m", "12m", "15m", "20m", "30m", "50m", "Original"];
     
     for result in &results {
         if result.official_elevation_gain_m > 0 {
-            let distbased_accuracy = (result.custom_distbased_elevation_gain_m as f64 / result.official_elevation_gain_m as f64) * 100.0;
-            let old_spike_distbased_accuracy = (result.spike_distbased_elevation_gain_m as f64 / result.official_elevation_gain_m as f64) * 100.0;
-            let smart_spike_distbased_accuracy = (result.smart_spike_distbased_elevation_gain_m as f64 / result.official_elevation_gain_m as f64) * 100.0;
+            let accuracies = [
+                result.distbased_1m_accuracy_percent,
+                result.distbased_1_5m_accuracy_percent,
+                result.distbased_2m_accuracy_percent,
+                result.distbased_2_5m_accuracy_percent,
+                result.distbased_3m_accuracy_percent,
+                result.distbased_3_5m_accuracy_percent,
+                result.distbased_4m_accuracy_percent,
+                result.distbased_4_5m_accuracy_percent,
+                result.distbased_5m_accuracy_percent,
+                result.distbased_5_5m_accuracy_percent,
+                result.distbased_6m_accuracy_percent,
+                result.distbased_6_5m_accuracy_percent,
+                result.distbased_7m_accuracy_percent,
+                result.distbased_10m_accuracy_percent,
+                result.distbased_12m_accuracy_percent,
+                result.distbased_15m_accuracy_percent,
+                result.distbased_20m_accuracy_percent,
+                result.distbased_30m_accuracy_percent,
+                result.distbased_50m_accuracy_percent,
+                result.original_accuracy_percent,
+            ];
             
-            let old_error = (old_spike_distbased_accuracy - 100.0).abs();
-            let smart_error = (smart_spike_distbased_accuracy - 100.0).abs();
+            let deviations: Vec<f32> = accuracies.iter()
+                .map(|&acc| (acc - 100.0).abs())
+                .collect();
             
-            if smart_error < old_error {
-                smart_better += 1;
-            } else if old_error < smart_error {
-                old_better += 1;
-            }
+            let min_deviation = deviations.iter().cloned().fold(f32::INFINITY, f32::min);
+            let best_index = deviations.iter().position(|&d| (d - min_deviation).abs() < 0.01).unwrap();
+            interval_winners[best_index] += 1;
             
-            println!("{}: Base {:.1}% | Old Spike {:.1}% | 🆕 Smart {:.1}% | Official {}m | GPS Quality {:.2}", 
-                     result.filename,
-                     distbased_accuracy,
-                     old_spike_distbased_accuracy,
-                     smart_spike_distbased_accuracy,
+            println!("{}: Official {}m | Winner: {} ({:.1}%)", 
+                     result.filename.replace(".gpx", "").chars().take(30).collect::<String>(),
                      result.official_elevation_gain_m,
-                     result.gps_quality_score);
+                     interval_names[best_index],
+                     accuracies[best_index]);
         }
     }
     
-    println!("\n📈 IMPROVEMENT SUMMARY:");
-    println!("Smart method is more accurate on {} routes", smart_better);
-    println!("Old method is more accurate on {} routes", old_better);
-    println!("Smart method improvement rate: {:.1}%", (smart_better as f64 / (smart_better + old_better) as f64) * 100.0);
-    
-    println!("\n🏔️  INCLINE HIGHLIGHTS:");
-    for result in &results {
-        if result.longest_incline_length_km > 0.0 {
-            println!("{}: Longest climb {:.2}km @ {:.1}%, Longest descent {:.2}km @ {:.1}%", 
-                     result.filename,
-                     result.longest_incline_length_km,
-                     result.longest_incline_grade_percent,
-                     result.longest_decline_length_km,
-                     result.longest_decline_grade_percent);
+    println!("\n📈 COMPREHENSIVE GRANULARITY PERFORMANCE SUMMARY:");
+    for (i, &wins) in interval_winners.iter().enumerate() {
+        if wins > 0 {
+            println!("{} interval most accurate: {} routes", interval_names[i], wins);
         }
     }
     
     Ok(())
 }
 
-// Hybrid smoother functions
-fn spike_then_distbased(raw_elevations: &[f64], distances: &[f64]) -> f64 {
-    println!("  🔧 Applying OLD Spike → DistBased hybrid...");
+// Distance-based processing with custom intervals
+fn distbased_with_interval(raw_elevations: &[f64], distances: &[f64], interval_meters: f64) -> f64 {
+    println!("  🔬 Applying DistBased processing with {:.1}m intervals...", interval_meters);
     
-    // Step 1: Remove spikes from raw data
-    let spike_removed = simple_spike_removal_only(raw_elevations, distances);
+    // Create a custom ElevationData with modified interval
+    let mut elevation_data = ElevationData::new_with_variant(
+        raw_elevations.to_vec(), 
+        distances.to_vec(), 
+        SmoothingVariant::DistBased
+    );
     
-    // Step 2: Apply DistBased to spike-removed data
-    let distbased_result = create_custom_distbased_adaptive(spike_removed, distances.to_vec());
-    distbased_result.get_total_elevation_gain()
+    // Override the distance-based processing with custom interval
+    elevation_data.apply_custom_interval_processing(interval_meters);
+    
+    elevation_data.get_total_elevation_gain()
 }
 
-fn spike_then_original(raw_elevations: &[f64], distances: &[f64]) -> f64 {
-    println!("  🔧 Applying Spike → Original hybrid...");
-    
-    // Step 1: Remove spikes from raw data
-    let spike_removed = simple_spike_removal_only(raw_elevations, distances);
-    
-    // Step 2: Apply Original to spike-removed data
-    let original_result = create_custom_original(spike_removed, distances.to_vec());
-    original_result.get_total_elevation_gain()
-}
-
-fn smart_spike_then_distbased(raw_elevations: &[f64], distances: &[f64], timestamps: Option<Vec<f64>>) -> f64 {
-    println!("  🆕 Applying SMART Spike → DistBased hybrid...");
-    smart_spike_distbased(raw_elevations.to_vec(), distances.to_vec(), timestamps)
+fn calculate_accuracy_percent(predicted: u32, official: u32) -> f32 {
+    if official == 0 {
+        0.0
+    } else {
+        (predicted as f32 / official as f32) * 100.0
+    }
 }
 
 fn process_gpx_file(path: &Path) -> Result<GpxAnalysis, Box<dyn std::error::Error>> {
@@ -375,33 +427,39 @@ fn process_gpx_file(path: &Path) -> Result<GpxAnalysis, Box<dyn std::error::Erro
         None
     };
     
-    // Apply all smoothing methods
-    println!("  🔄 Applying smoothing methods...");
+    // Apply all processing methods
+    println!("  🔄 Applying comprehensive distance-based processing methods...");
     
     let custom_original = create_custom_original(raw_elevations.clone(), distances.clone());
     let custom_original_gain = custom_original.get_total_elevation_gain();
     
-    let custom_distbased = create_custom_distbased_adaptive(raw_elevations.clone(), distances.clone());
-    let custom_distbased_gain = custom_distbased.get_total_elevation_gain();
+    let custom_distbased_10m = create_custom_distbased_adaptive(raw_elevations.clone(), distances.clone());
+    let custom_distbased_10m_gain = custom_distbased_10m.get_total_elevation_gain();
     
-    let simple_spike_only_smoothed = simple_spike_removal_only(&raw_elevations, &distances);
-    let (simple_spike_only_gain, _) = calculate_simple_elevation_gain_loss(&simple_spike_only_smoothed);
-    
-    // Apply hybrid methods
-    let spike_distbased_gain = spike_then_distbased(&raw_elevations, &distances);
-    let spike_original_gain = spike_then_original(&raw_elevations, &distances);
-    
-    // Apply NEW smart spike method
-    let smart_spike_distbased_gain = smart_spike_then_distbased(&raw_elevations, &distances, timestamp_seconds.clone());
+    // Apply all distance interval methods - comprehensive set
+    let distbased_1m_gain = distbased_with_interval(&raw_elevations, &distances, 1.0);
+    let distbased_1_5m_gain = distbased_with_interval(&raw_elevations, &distances, 1.5);
+    let distbased_2m_gain = distbased_with_interval(&raw_elevations, &distances, 2.0);
+    let distbased_2_5m_gain = distbased_with_interval(&raw_elevations, &distances, 2.5);
+    let distbased_3m_gain = distbased_with_interval(&raw_elevations, &distances, 3.0);
+    let distbased_3_5m_gain = distbased_with_interval(&raw_elevations, &distances, 3.5);
+    let distbased_4m_gain = distbased_with_interval(&raw_elevations, &distances, 4.0);
+    let distbased_4_5m_gain = distbased_with_interval(&raw_elevations, &distances, 4.5);
+    let distbased_5m_gain = distbased_with_interval(&raw_elevations, &distances, 5.0);
+    let distbased_5_5m_gain = distbased_with_interval(&raw_elevations, &distances, 5.5);
+    let distbased_6m_gain = distbased_with_interval(&raw_elevations, &distances, 6.0);
+    let distbased_6_5m_gain = distbased_with_interval(&raw_elevations, &distances, 6.5);
+    let distbased_7m_gain = distbased_with_interval(&raw_elevations, &distances, 7.0);
+    let distbased_12m_gain = distbased_with_interval(&raw_elevations, &distances, 12.0);
+    let distbased_15m_gain = distbased_with_interval(&raw_elevations, &distances, 15.0);
+    let distbased_20m_gain = distbased_with_interval(&raw_elevations, &distances, 20.0);
+    let distbased_30m_gain = distbased_with_interval(&raw_elevations, &distances, 30.0);
+    let distbased_50m_gain = distbased_with_interval(&raw_elevations, &distances, 50.0);
     
     // Calculate GPS quality score for reporting
     let quality_metrics = GpsQualityMetrics::analyze_gps_quality(
         &raw_elevations, &distances, timestamp_seconds.as_deref()
     );
-    
-    // Perform incline analysis
-    println!("  🏔️  Analyzing inclines and declines...");
-    let incline_analysis = analyze_inclines_default(raw_elevations.clone(), distances.clone());
     
     let filename = path.file_name()
         .and_then(|name| name.to_str())
@@ -409,38 +467,36 @@ fn process_gpx_file(path: &Path) -> Result<GpxAnalysis, Box<dyn std::error::Erro
         .to_string();
     
     let official_gain = get_official_elevation_gain(&filename);
-    let distbased_vs_official_diff = custom_distbased_gain as i32 - official_gain as i32;
-    let spike_distbased_vs_official_diff = spike_distbased_gain as i32 - official_gain as i32;
-    let spike_original_vs_official_diff = spike_original_gain as i32 - official_gain as i32;
-    let smart_vs_official_diff = smart_spike_distbased_gain as i32 - official_gain as i32;
     
-    // Extract incline/decline data
-    let (longest_incline_length_km, longest_incline_gain_m, longest_incline_grade_percent) = 
-        if let Some(ref incline) = incline_analysis.longest_incline {
-            (incline.length_km as f32, incline.elevation_gain_m as u32, incline.average_grade_percent as f32)
-        } else {
-            (0.0, 0, 0.0)
-        };
-    
-    let (longest_decline_length_km, longest_decline_loss_m, longest_decline_grade_percent) = 
-        if let Some(ref decline) = incline_analysis.longest_decline {
-            (decline.length_km as f32, decline.elevation_loss_m as u32, decline.average_grade_percent as f32)
-        } else {
-            (0.0, 0, 0.0)
-        };
+    // Calculate accuracy percentages for all methods
+    let original_accuracy = calculate_accuracy_percent(custom_original_gain.round() as u32, official_gain);
+    let distbased_10m_accuracy = calculate_accuracy_percent(custom_distbased_10m_gain.round() as u32, official_gain);
+    let distbased_1m_accuracy = calculate_accuracy_percent(distbased_1m_gain.round() as u32, official_gain);
+    let distbased_1_5m_accuracy = calculate_accuracy_percent(distbased_1_5m_gain.round() as u32, official_gain);
+    let distbased_2m_accuracy = calculate_accuracy_percent(distbased_2m_gain.round() as u32, official_gain);
+    let distbased_2_5m_accuracy = calculate_accuracy_percent(distbased_2_5m_gain.round() as u32, official_gain);
+    let distbased_3m_accuracy = calculate_accuracy_percent(distbased_3m_gain.round() as u32, official_gain);
+    let distbased_3_5m_accuracy = calculate_accuracy_percent(distbased_3_5m_gain.round() as u32, official_gain);
+    let distbased_4m_accuracy = calculate_accuracy_percent(distbased_4m_gain.round() as u32, official_gain);
+    let distbased_4_5m_accuracy = calculate_accuracy_percent(distbased_4_5m_gain.round() as u32, official_gain);
+    let distbased_5m_accuracy = calculate_accuracy_percent(distbased_5m_gain.round() as u32, official_gain);
+    let distbased_5_5m_accuracy = calculate_accuracy_percent(distbased_5_5m_gain.round() as u32, official_gain);
+    let distbased_6m_accuracy = calculate_accuracy_percent(distbased_6m_gain.round() as u32, official_gain);
+    let distbased_6_5m_accuracy = calculate_accuracy_percent(distbased_6_5m_gain.round() as u32, official_gain);
+    let distbased_7m_accuracy = calculate_accuracy_percent(distbased_7m_gain.round() as u32, official_gain);
+    let distbased_12m_accuracy = calculate_accuracy_percent(distbased_12m_gain.round() as u32, official_gain);
+    let distbased_15m_accuracy = calculate_accuracy_percent(distbased_15m_gain.round() as u32, official_gain);
+    let distbased_20m_accuracy = calculate_accuracy_percent(distbased_20m_gain.round() as u32, official_gain);
+    let distbased_30m_accuracy = calculate_accuracy_percent(distbased_30m_gain.round() as u32, official_gain);
+    let distbased_50m_accuracy = calculate_accuracy_percent(distbased_50m_gain.round() as u32, official_gain);
     
     if official_gain > 0 {
-        println!("  📊 DistBased: {}m vs Official: {}m ({}m diff)", 
-                 custom_distbased_gain.round() as u32, official_gain, distbased_vs_official_diff);
-        println!("  📊 🆕 Smart Spike+DistBased: {}m vs Official: {}m ({}m diff) [GPS Quality: {:.2}]", 
-                 smart_spike_distbased_gain.round() as u32, official_gain, smart_vs_official_diff, quality_metrics.quality_score);
-        println!("  📊 Old Spike+DistBased: {}m vs Official: {}m ({}m diff)", 
-                 spike_distbased_gain.round() as u32, official_gain, spike_distbased_vs_official_diff);
+        println!("  📊 Sample Accuracies vs Official {}m:", official_gain);
+        println!("    1m: {:.1}% | 3m: {:.1}% | 6m: {:.1}% | 10m: {:.1}% | 20m: {:.1}% | 50m: {:.1}%", 
+                 distbased_1m_accuracy, distbased_3m_accuracy, distbased_6m_accuracy, 
+                 distbased_10m_accuracy, distbased_20m_accuracy, distbased_50m_accuracy);
+        println!("  🎯 GPS Quality Score: {:.2}", quality_metrics.quality_score);
     }
-    
-    println!("  🏔️  Longest climb: {:.2}km @ {:.1}%, Longest descent: {:.2}km @ {:.1}%",
-             longest_incline_length_km, longest_incline_grade_percent,
-             longest_decline_length_km, longest_decline_grade_percent);
     
     Ok(GpxAnalysis {
         filename,
@@ -448,27 +504,47 @@ fn process_gpx_file(path: &Path) -> Result<GpxAnalysis, Box<dyn std::error::Erro
         raw_elevation_gain_m: raw_gain.round() as u32,
         average_time_interval_seconds: average_time_interval,
         custom_original_elevation_gain_m: custom_original_gain.round() as u32,
-        custom_distbased_elevation_gain_m: custom_distbased_gain.round() as u32,
-        simple_spike_only_elevation_gain_m: simple_spike_only_gain.round() as u32,
-        spike_distbased_elevation_gain_m: spike_distbased_gain.round() as u32,
-        spike_original_elevation_gain_m: spike_original_gain.round() as u32,
-        smart_spike_distbased_elevation_gain_m: smart_spike_distbased_gain.round() as u32,
+        custom_distbased_10m_elevation_gain_m: custom_distbased_10m_gain.round() as u32,
+        distbased_1m_interval_elevation_gain_m: distbased_1m_gain.round() as u32,
+        distbased_1_5m_interval_elevation_gain_m: distbased_1_5m_gain.round() as u32,
+        distbased_2m_interval_elevation_gain_m: distbased_2m_gain.round() as u32,
+        distbased_2_5m_interval_elevation_gain_m: distbased_2_5m_gain.round() as u32,
+        distbased_3m_interval_elevation_gain_m: distbased_3m_gain.round() as u32,
+        distbased_3_5m_interval_elevation_gain_m: distbased_3_5m_gain.round() as u32,
+        distbased_4m_interval_elevation_gain_m: distbased_4m_gain.round() as u32,
+        distbased_4_5m_interval_elevation_gain_m: distbased_4_5m_gain.round() as u32,
+        distbased_5m_interval_elevation_gain_m: distbased_5m_gain.round() as u32,
+        distbased_5_5m_interval_elevation_gain_m: distbased_5_5m_gain.round() as u32,
+        distbased_6m_interval_elevation_gain_m: distbased_6m_gain.round() as u32,
+        distbased_6_5m_interval_elevation_gain_m: distbased_6_5m_gain.round() as u32,
+        distbased_7m_interval_elevation_gain_m: distbased_7m_gain.round() as u32,
+        distbased_12m_interval_elevation_gain_m: distbased_12m_gain.round() as u32,
+        distbased_15m_interval_elevation_gain_m: distbased_15m_gain.round() as u32,
+        distbased_20m_interval_elevation_gain_m: distbased_20m_gain.round() as u32,
+        distbased_30m_interval_elevation_gain_m: distbased_30m_gain.round() as u32,
+        distbased_50m_interval_elevation_gain_m: distbased_50m_gain.round() as u32,
         official_elevation_gain_m: official_gain,
-        distbased_vs_official_diff_m: distbased_vs_official_diff,
-        spike_distbased_vs_official_diff_m: spike_distbased_vs_official_diff,
-        spike_original_vs_official_diff_m: spike_original_vs_official_diff,
-        smart_vs_official_diff_m: smart_vs_official_diff,
+        original_accuracy_percent: original_accuracy,
+        distbased_10m_accuracy_percent: distbased_10m_accuracy,
+        distbased_1m_accuracy_percent: distbased_1m_accuracy,
+        distbased_1_5m_accuracy_percent: distbased_1_5m_accuracy,
+        distbased_2m_accuracy_percent: distbased_2m_accuracy,
+        distbased_2_5m_accuracy_percent: distbased_2_5m_accuracy,
+        distbased_3m_accuracy_percent: distbased_3m_accuracy,
+        distbased_3_5m_accuracy_percent: distbased_3_5m_accuracy,
+        distbased_4m_accuracy_percent: distbased_4m_accuracy,
+        distbased_4_5m_accuracy_percent: distbased_4_5m_accuracy,
+        distbased_5m_accuracy_percent: distbased_5m_accuracy,
+        distbased_5_5m_accuracy_percent: distbased_5_5m_accuracy,
+        distbased_6m_accuracy_percent: distbased_6m_accuracy,
+        distbased_6_5m_accuracy_percent: distbased_6_5m_accuracy,
+        distbased_7m_accuracy_percent: distbased_7m_accuracy,
+        distbased_12m_accuracy_percent: distbased_12m_accuracy,
+        distbased_15m_accuracy_percent: distbased_15m_accuracy,
+        distbased_20m_accuracy_percent: distbased_20m_accuracy,
+        distbased_30m_accuracy_percent: distbased_30m_accuracy,
+        distbased_50m_accuracy_percent: distbased_50m_accuracy,
         gps_quality_score: quality_metrics.quality_score as f32,
-        longest_incline_length_km,
-        longest_incline_gain_m,
-        longest_incline_grade_percent,
-        longest_decline_length_km,
-        longest_decline_loss_m,
-        longest_decline_grade_percent,
-        total_inclines_count: incline_analysis.all_inclines.len() as u32,
-        total_declines_count: incline_analysis.all_declines.len() as u32,
-        climbing_percentage: incline_analysis.climbing_percentage as f32,
-        descending_percentage: incline_analysis.descending_percentage as f32,
     })
 }
 

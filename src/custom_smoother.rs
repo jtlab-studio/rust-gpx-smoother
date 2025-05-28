@@ -867,3 +867,66 @@ impl ElevationData {
 }
 
 
+
+impl ElevationData {
+    /// Custom interval processing for testing different distance intervals
+    /// Custom interval processing for testing different distance intervals
+    pub fn apply_custom_interval_processing(&mut self, interval_meters: f64) {
+        println!("DEBUG [CUSTOM-INTERVAL]: Starting custom interval processing with {:.1}m intervals...", interval_meters);
+        
+        // First calculate terrain type for adaptive parameters
+        self.calculate_altitude_changes();
+        self.calculate_accumulated_ascent_descent();
+        self.calculate_overall_gradients();
+        
+        let hilliness_ratio = self.overall_uphill_gradient;
+        
+        // Determine adaptive parameters based on terrain and interval
+        let (deadband_threshold, gaussian_window) = if hilliness_ratio < 20.0 {
+            println!("DEBUG [CUSTOM-INTERVAL]: FLAT terrain ({:.2}m/km)", hilliness_ratio);
+            let deadband = match interval_meters as u32 {
+                1 => 0.8, 3 => 1.0, 6 => 1.2, _ => 1.5,
+            };
+            let window = ((120.0 / interval_meters).round() as usize).max(5).min(50);
+            (deadband, window)
+        } else if hilliness_ratio < 40.0 {
+            println!("DEBUG [CUSTOM-INTERVAL]: HILLY terrain ({:.2}m/km)", hilliness_ratio);
+            let deadband = match interval_meters as u32 {
+                1 => 1.5, 3 => 1.8, 6 => 2.0, _ => 2.5,
+            };
+            let window = ((150.0 / interval_meters).round() as usize).max(5).min(30);
+            (deadband, window)
+        } else {
+            println!("DEBUG [CUSTOM-INTERVAL]: SUPER HILLY terrain ({:.2}m/km)", hilliness_ratio);
+            let deadband = match interval_meters as u32 {
+                1 => 2.0, 3 => 1.8, 6 => 1.5, _ => 2.0,
+            };
+            let window = ((100.0 / interval_meters).round() as usize).max(3).min(20);
+            (deadband, window)
+        };
+        
+        // Resample and process
+        let (uniform_distances, uniform_elevations) = self.resample_to_uniform_distance(interval_meters);
+        if uniform_elevations.is_empty() { return; }
+        
+        let median_smoothed = Self::median_filter(&uniform_elevations, 3);
+        let gaussian_smoothed = Self::gaussian_smooth(&median_smoothed, gaussian_window);
+        
+        // Update data
+        let mut smoothed_altitude_changes = vec![0.0];
+        for i in 1..gaussian_smoothed.len() {
+            smoothed_altitude_changes.push(gaussian_smoothed[i] - gaussian_smoothed[i - 1]);
+        }
+        
+        self.enhanced_altitude = gaussian_smoothed;
+        self.cumulative_distance = uniform_distances;
+        self.altitude_change = smoothed_altitude_changes;
+        self.distance_change = vec![interval_meters; self.altitude_change.len()];
+        self.distance_change[0] = self.cumulative_distance[0];
+        
+        // Apply deadband using existing method
+        self.apply_deadband_filtering(deadband_threshold);
+        self.calculate_gradients();
+        self.recalculate_accumulated_values_after_smoothing();
+    }
+}
