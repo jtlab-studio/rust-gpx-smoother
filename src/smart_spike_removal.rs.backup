@@ -1,0 +1,270 @@
+/// Smart Spike Removal - Apply spike removal only when GPS data quality warrants it
+/// Based on analysis of 55+ GPX routes showing spike removal hurts accuracy on high-quality GPS data
+
+use crate::custom_smoother::{ElevationData, create_custom_distbased_adaptive};
+
+#[derive(Debug, Clone)]
+pub struct GpsQualityMetrics {
+    pub raw_elevation_gain: f64,
+    pub distance_km: f64,
+    pub elevation_noise_ratio: f64,
+    pub spike_count: usize,
+    pub time_variance: f64,
+    pub needs_spike_removal: bool,
+    pub quality_score: f64,
+}
+
+impl GpsQualityMetrics {
+    pub fn analyze_gps_quality(
+        elevations: &[f64], 
+        distances: &[f64], 
+        timestamps: Option<&[f64]>
+    ) -> Self {
+        let raw_elevation_gain = calculate_raw_elevation_gain(elevations);
+        let distance_km = distances.last().unwrap_or(&0.0) / 1000.0;
+        
+        // Calculate elevation noise ratio (high frequency variations)
+        let noise_ratio = calculate_elevation_noise_ratio(elevations);
+        
+        // Count obvious GPS spikes
+        let spike_count = count_gps_spikes(elevations, 3.0);
+        
+        // Analyze time intervals if available
+        let time_variance = if let Some(times) = timestamps {
+            calculate_time_variance(times)
+        } else {
+            0.0
+        };
+        
+        // Calculate overall quality score and decision
+        let (quality_score, needs_spike_removal) = Self::calculate_quality_decision(
+            raw_elevation_gain,
+            distance_km,
+            noise_ratio,
+            spike_count,
+            time_variance
+        );
+        
+        GpsQualityMetrics {
+            raw_elevation_gain,
+            distance_km,
+            elevation_noise_ratio: noise_ratio,
+            spike_count,
+            time_variance,
+            needs_spike_removal,
+            quality_score,
+        }
+    }
+    
+    fn calculate_quality_decision(
+        raw_gain: f64,
+        distance_km: f64,
+        noise_ratio: f64,
+        spike_count: usize,
+        time_variance: f64
+    ) -> (f64, bool) {
+        let gain_per_km = if distance_km > 0.0 { raw_gain / distance_km } else { 0.0 };
+        
+        // Calculate quality indicators (0-1 scale, higher = worse quality)
+        let excessive_gain_score = match gain_per_km {
+            x if x < 20.0 => (raw_gain / 100.0).min(2.0),  // Flat routes
+            x if x < 50.0 => ((raw_gain - distance_km * 40.0) / (distance_km * 35.0)).max(0.0).min(2.0),
+            _ => ((raw_gain - distance_km * 80.0) / (distance_km * 70.0)).max(0.0).min(2.0),
+        };
+        
+        let noise_score = (noise_ratio - 0.3).max(0.0) / 0.4;  // 0.3-0.7 range
+        let spike_score = (spike_count as f64 / (distance_km * 3.0)).min(1.0);
+        let timing_score = (time_variance / 100.0).min(1.0);
+        
+        // Weighted quality score
+        let quality_score = (excessive_gain_score * 0.4) + 
+                           (noise_score * 0.3) + 
+                           (spike_score * 0.2) + 
+                           (timing_score * 0.1);
+        
+        // Decision threshold - only apply spike removal if quality is poor
+        let needs_spike_removal = quality_score > 0.5;
+        
+        println!("GPS Quality Analysis:");
+        println!("  Gain/km: {:.1}m, Noise: {:.2}, Spikes: {}, Time variance: {:.1}", 
+                 gain_per_km, noise_ratio, spike_count, time_variance);
+        println!("  Quality score: {:.2} (threshold: 0.5)", quality_score);
+        println!("  Spike removal: {}", if needs_spike_removal { "YES" } else { "NO" });
+        
+        (quality_score, needs_spike_removal)
+    }
+}
+
+fn calculate_raw_elevation_gain(elevations: &[f64]) -> f64 {
+    elevations.windows(2)
+        .map(|w| if w[1] > w[0] { w[1] - w[0] } else { 0.0 })
+        .sum()
+}
+
+fn calculate_elevation_noise_ratio(elevations: &[f64]) -> f64 {
+    if elevations.len() < 20 {
+        return 0.0;
+    }
+    
+    // Calculate 5-point moving average to identify trend
+    let window_size = (elevations.len() / 15).max(5).min(20);
+    let mut smoothed = vec![];
+    
+    for i in 0..elevations.len() {
+        let start = if i >= window_size/2 { i - window_size/2 } else { 0 };
+        let end = (i + window_size/2 + 1).min(elevations.len());
+        let avg = elevations[start..end].iter().sum::<f64>() / (end - start) as f64;
+        smoothed.push(avg);
+    }
+    
+    // Calculate total variation vs trend variation
+    let total_variation: f64 = elevations.windows(2)
+        .map(|w| (w[1] - w[0]).abs())
+        .sum();
+    
+    let trend_variation: f64 = smoothed.windows(2)
+        .map(|w| (w[1] - w[0]).abs())
+        .sum();
+    
+    if total_variation > 0.0 {
+        (total_variation - trend_variation) / total_variation
+    } else {
+        0.0
+    }
+}
+
+fn count_gps_spikes(elevations: &[f64], threshold_m: f64) -> usize {
+    let mut spike_count = 0;
+    
+    for i in 1..elevations.len() - 1 {
+        let prev = elevations[i - 1];
+        let curr = elevations[i];
+        let next = elevations[i + 1];
+        
+        let up_change = curr - prev;
+        let down_change = next - curr;
+        
+        // Detect spike pattern: sudden jump up/down then back
+        if up_change.abs() > threshold_m && 
+           down_change.abs() > threshold_m && 
+           up_change.signum() != down_change.signum() {
+            spike_count += 1;
+        }
+    }
+    
+    spike_count
+}
+
+fn calculate_time_variance(timestamps: &[f64]) -> f64 {
+    if timestamps.len() < 10 {
+        return 0.0;
+    }
+    
+    let intervals: Vec<f64> = timestamps.windows(2)
+        .map(|w| w[1] - w[0])
+        .filter(|&interval| interval > 0.0 && interval < 3600.0)
+        .collect();
+    
+    if intervals.is_empty() {
+        return 0.0;
+    }
+    
+    let mean = intervals.iter().sum::<f64>() / intervals.len() as f64;
+    let variance = intervals.iter()
+        .map(|&x| (x - mean).powi(2))
+        .sum::<f64>() / intervals.len() as f64;
+    
+    variance.sqrt()
+}
+
+/// Smart processing: apply spike removal only when GPS quality analysis indicates it's needed
+pub fn smart_spike_distbased(
+    elevations: Vec<f64>, 
+    distances: Vec<f64>,
+    timestamps: Option<Vec<f64>>
+) -> f64 {
+    println!("🔍 Analyzing GPS data quality...");
+    
+    let quality_metrics = GpsQualityMetrics::analyze_gps_quality(
+        &elevations, 
+        &distances, 
+        timestamps.as_deref()
+    );
+    
+    if quality_metrics.needs_spike_removal {
+        println!("🔧 Applying Smart Spike → DistBased (GPS quality issues detected)");
+        
+        // Apply enhanced spike removal
+        let spike_removed = enhanced_spike_removal(&elevations, &distances, quality_metrics.quality_score);
+        
+        // Apply DistBased processing
+        let distbased_result = create_custom_distbased_adaptive(spike_removed, distances);
+        distbased_result.get_total_elevation_gain()
+    } else {
+        println!("🎯 Applying DistBased only (GPS quality is sufficient)");
+        
+        // Skip spike removal, apply DistBased directly
+        let distbased_result = create_custom_distbased_adaptive(elevations, distances);
+        distbased_result.get_total_elevation_gain()
+    }
+}
+
+/// Enhanced spike removal with quality-based threshold adaptation
+fn enhanced_spike_removal(elevations: &[f64], _distances: &[f64], quality_score: f64) -> Vec<f64> {
+    if elevations.len() < 3 {
+        return elevations.to_vec();
+    }
+    
+    // Adapt threshold based on quality score
+    let base_threshold = 3.0;
+    let threshold_m = if quality_score > 1.0 {
+        base_threshold * 0.7  // More aggressive for very poor GPS
+    } else if quality_score > 0.8 {
+        base_threshold        // Standard for poor GPS
+    } else {
+        base_threshold * 1.3  // Conservative for borderline cases
+    };
+    
+    let original_gain = calculate_raw_elevation_gain(elevations);
+    let mut result = elevations.to_vec();
+    let mut spikes_removed = 0;
+    
+    // 3-point spike detection with adaptive threshold
+    for i in 1..elevations.len() - 1 {
+        let prev = elevations[i - 1];
+        let curr = elevations[i];
+        let next = elevations[i + 1];
+        
+        let up_change = curr - prev;
+        let down_change = next - curr;
+        
+        // Enhanced spike detection
+        if up_change.abs() > threshold_m && 
+           down_change.abs() > threshold_m && 
+           up_change.signum() != down_change.signum() {
+            
+            // Use weighted interpolation instead of simple average
+            let weight_prev = 1.0 / (1.0 + up_change.abs());
+            let weight_next = 1.0 / (1.0 + down_change.abs());
+            let total_weight = weight_prev + weight_next;
+            
+            result[i] = (prev * weight_prev + next * weight_next) / total_weight;
+            spikes_removed += 1;
+        }
+    }
+    
+    let final_gain = calculate_raw_elevation_gain(&result);
+    
+    if spikes_removed > 0 {
+        println!("🔧 Enhanced spike removal: {} spikes removed, {:.1}m → {:.1}m ({:.1}% change)", 
+                 spikes_removed, original_gain, final_gain, 
+                 ((final_gain - original_gain) / original_gain) * 100.0);
+    }
+    
+    result
+}
+
+/// Convenience function for backward compatibility
+pub fn simple_spike_removal_only(elevations: &[f64], distances: &[f64]) -> Vec<f64> {
+    enhanced_spike_removal(elevations, distances, 1.0)  // Use standard threshold
+}
