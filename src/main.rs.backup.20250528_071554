@@ -9,10 +9,8 @@ use serde::Serialize;
 use gpx::Time;
 
 mod custom_smoother;
-mod universal_smoother;
 
 use custom_smoother::{create_custom_original, create_custom_capping, create_custom_flat21, create_custom_postcap, create_custom_distbased_adaptive};
-use universal_smoother::{universal_smooth, calculate_universal_elevation_gain_loss};
 
 #[derive(Debug, Serialize)]
 struct GpxAnalysis {
@@ -25,13 +23,12 @@ struct GpxAnalysis {
     custom_flat21_elevation_gain_m: u32,
     custom_postcap_elevation_gain_m: u32,
     custom_distbased_elevation_gain_m: u32,
-    universal_elevation_gain_m: u32,
     official_elevation_gain_m: u32,
     distbased_vs_official_diff_m: i32,
-    universal_vs_official_diff_m: i32,
 }
 
 fn get_official_elevation_gain(filename: &str) -> u32 {
+    // Official elevation gain lookup table based on your data
     match filename.to_lowercase().as_str() {
         "berlin garmin.gpx" => 73,
         "bostonmarathon2024.gpx" => 248,
@@ -45,15 +42,15 @@ fn get_official_elevation_gain(filename: &str) -> u32 {
         "tokyomarathon.gpx" => 40,
         "valencia2022.gpx" => 46,
         "xterra-o-see-ultra-trail-2024-50k.gpx" => 2300,
-        _ => 0,
+        _ => 0, // Unknown routes
     }
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let gpx_folder = r"C:\Users\Dzhu\Documents\GPX Files";
-    let output_path = Path::new(gpx_folder).join("adaptive_distbased_with_universal_and_official.csv");
+    let output_path = Path::new(gpx_folder).join("adaptive_distbased_with_official.csv");
     
-    println!("Analyzing GPX files with ADAPTIVE DISTBASED + UNIVERSAL + OFFICIAL COMPARISON...");
+    println!("Analyzing GPX files with ADAPTIVE DISTBASED + OFFICIAL COMPARISON...");
     println!("1. Custom Original: Adaptive 83-point/5-point with conditional capping");
     println!("2. Custom Capping: 5-point smoothing + capping applied to ALL routes");
     println!("3. Custom Flat21: 21-point for flat routes + 5-point for hilly");
@@ -62,12 +59,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("   • Flat routes (<20m/km): 1.2m deadband + 120m Gaussian smoothing");
     println!("   • Hilly routes (20-40m/km): 2.0m deadband + 150m Gaussian smoothing");
     println!("   • Super Hilly routes (>40m/km): 1.5m deadband + 100m Gaussian smoothing");
-    println!("6. Universal Smoother: Simple adaptive window with bounds checking");
-    println!("7. Official Numbers: Direct comparison with known official values");
+    println!("6. Official Numbers: Direct comparison with known official values");
     println!("Output will be saved to: {}", output_path.display());
     
     let mut results = Vec::new();
     
+    // Iterate through all GPX files in the directory
     for entry in WalkDir::new(gpx_folder) {
         let entry = entry?;
         if entry.file_type().is_file() {
@@ -94,8 +91,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
     
+    // Write results to CSV
     let mut wtr = Writer::from_path(&output_path)?;
     
+    // Write header
     wtr.write_record(&[
         "Filename",
         "Raw Distance (km)", 
@@ -106,12 +105,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "Custom Flat21 Elevation Gain (m)",
         "Custom PostCap Elevation Gain (m)",
         "Custom DistBased Elevation Gain (m)",
-        "Universal Elevation Gain (m)",
         "Official Elevation Gain (m)",
         "DistBased vs Official Diff (m)",
-        "Universal vs Official Diff (m)",
     ])?;
     
+    let file_count = results.len();
+    
+    // Write data - FIXED: Use &results to avoid moving
     for result in &results {
         wtr.write_record(&[
             &result.filename,
@@ -123,18 +123,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             &result.custom_flat21_elevation_gain_m.to_string(),
             &result.custom_postcap_elevation_gain_m.to_string(),
             &result.custom_distbased_elevation_gain_m.to_string(),
-            &result.universal_elevation_gain_m.to_string(),
             &result.official_elevation_gain_m.to_string(),
             &result.distbased_vs_official_diff_m.to_string(),
-            &result.universal_vs_official_diff_m.to_string(),
         ])?;
     }
     
     wtr.flush()?;
     
     println!("\nAnalysis complete! Results saved to: {}", output_path.display());
-    println!("Processed {} GPX files", results.len());
+    println!("Processed {} GPX files", file_count);
     
+    // Print summary of DistBased vs Official comparison - FIXED: Use &results
     println!("\n=== DistBased vs Official Comparison ===");
     for result in &results {
         if result.official_elevation_gain_m > 0 {
@@ -144,19 +143,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                      result.custom_distbased_elevation_gain_m,
                      result.official_elevation_gain_m,
                      result.distbased_vs_official_diff_m,
-                     accuracy_pct);
-        }
-    }
-    
-    println!("\n=== Universal vs Official Comparison ===");
-    for result in &results {
-        if result.official_elevation_gain_m > 0 {
-            let accuracy_pct = (result.universal_elevation_gain_m as f64 / result.official_elevation_gain_m as f64) * 100.0;
-            println!("{}: Universal {}m vs Official {}m ({:+}m, {:.1}% accuracy)", 
-                     result.filename,
-                     result.universal_elevation_gain_m,
-                     result.official_elevation_gain_m,
-                     result.universal_vs_official_diff_m,
                      accuracy_pct);
         }
     }
@@ -172,6 +158,7 @@ fn process_gpx_file(path: &Path) -> Result<GpxAnalysis, Box<dyn std::error::Erro
     let mut coords: Vec<(f64, f64, f64)> = vec![];
     let mut timestamps: Vec<Option<Time>> = vec![];
     
+    // Extract coordinates and timestamps from GPX
     for track in gpx.tracks {
         for segment in track.segments {
             for pt in segment.points {
@@ -189,10 +176,12 @@ fn process_gpx_file(path: &Path) -> Result<GpxAnalysis, Box<dyn std::error::Erro
         return Err("No valid coordinates found in GPX file".into());
     }
     
+    // Analyze timestamps to calculate average interval
     let average_time_interval = calculate_average_time_interval(&timestamps);
     
     println!("  → Average time interval: {} seconds", average_time_interval);
     
+    // Compute cumulative distance
     let mut distances = vec![0.0];
     for i in 1..coords.len() {
         let a = point!(x: coords[i-1].1, y: coords[i-1].0);
@@ -204,8 +193,10 @@ fn process_gpx_file(path: &Path) -> Result<GpxAnalysis, Box<dyn std::error::Erro
     let raw_elevations: Vec<f64> = coords.iter().map(|x| x.2).collect();
     let total_distance_km = distances.last().unwrap() / 1000.0;
     
+    // Compute raw elevation gain
     let (raw_gain, _) = gain_loss(&raw_elevations);
     
+    // Apply all five custom smoothing variants
     println!("  → Applying Custom Original (83-point/5-point adaptive)...");
     let custom_original = create_custom_original(raw_elevations.clone(), distances.clone());
     let custom_original_gain = custom_original.get_total_elevation_gain();
@@ -226,24 +217,18 @@ fn process_gpx_file(path: &Path) -> Result<GpxAnalysis, Box<dyn std::error::Erro
     let custom_distbased = create_custom_distbased_adaptive(raw_elevations.clone(), distances.clone());
     let custom_distbased_gain = custom_distbased.get_total_elevation_gain();
     
-    println!("  → Applying Universal Smoother (adaptive window with bounds)...");
-    let universal_smoothed = universal_smooth(&distances, &raw_elevations);
-    let (universal_gain, _) = calculate_universal_elevation_gain_loss(&universal_smoothed);
-    
     let filename = path.file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("unknown")
         .to_string();
     
+    // Get official elevation gain for comparison
     let official_gain = get_official_elevation_gain(&filename);
     let distbased_vs_official_diff = custom_distbased_gain as i32 - official_gain as i32;
-    let universal_vs_official_diff = universal_gain.round() as i32 - official_gain as i32;
     
     if official_gain > 0 {
         println!("  → DistBased: {}m vs Official: {}m (Diff: {:+}m)", 
                  custom_distbased_gain.round() as u32, official_gain, distbased_vs_official_diff);
-        println!("  → Universal: {}m vs Official: {}m (Diff: {:+}m)",
-                 universal_gain.round() as u32, official_gain, universal_vs_official_diff);
     }
     
     Ok(GpxAnalysis {
@@ -256,14 +241,13 @@ fn process_gpx_file(path: &Path) -> Result<GpxAnalysis, Box<dyn std::error::Erro
         custom_flat21_elevation_gain_m: custom_flat21_gain.round() as u32,
         custom_postcap_elevation_gain_m: custom_postcap_gain.round() as u32,
         custom_distbased_elevation_gain_m: custom_distbased_gain.round() as u32,
-        universal_elevation_gain_m: universal_gain.round() as u32,
         official_elevation_gain_m: official_gain,
         distbased_vs_official_diff_m: distbased_vs_official_diff,
-        universal_vs_official_diff_m: universal_vs_official_diff,
     })
 }
 
 fn calculate_average_time_interval(timestamps: &[Option<Time>]) -> u32 {
+    // Count valid timestamps
     let valid_timestamps: Vec<&Time> = timestamps.iter()
         .filter_map(|ts| ts.as_ref())
         .collect();
@@ -273,12 +257,15 @@ fn calculate_average_time_interval(timestamps: &[Option<Time>]) -> u32 {
         return 0;
     }
     
+    // Calculate intervals between consecutive timestamps
     let mut intervals = Vec::new();
     for i in 1..valid_timestamps.len() {
+        // Convert GPX Time to chrono DateTime for calculation
         let time1_result = valid_timestamps[i-1].format();
         let time2_result = valid_timestamps[i].format();
         
         if let (Ok(time1_str), Ok(time2_str)) = (time1_result, time2_result) {
+            // Parse the formatted time strings to chrono DateTime
             let dt1_result = time1_str.parse::<chrono::DateTime<chrono::Utc>>();
             let dt2_result = time2_str.parse::<chrono::DateTime<chrono::Utc>>();
             
@@ -286,6 +273,7 @@ fn calculate_average_time_interval(timestamps: &[Option<Time>]) -> u32 {
                 let interval = dt2.signed_duration_since(dt1);
                 let seconds = interval.num_seconds();
                 
+                // Only include reasonable intervals (between 0.1 and 3600 seconds)
                 if seconds > 0 && seconds <= 3600 {
                     intervals.push(seconds as f64);
                 }
@@ -298,14 +286,17 @@ fn calculate_average_time_interval(timestamps: &[Option<Time>]) -> u32 {
         return 0;
     }
     
+    // Calculate average interval
     let average_interval = intervals.iter().sum::<f64>() / intervals.len() as f64;
     
+    // Calculate some statistics for debugging
     let min_interval = intervals.iter().fold(f64::INFINITY, |a, &b| a.min(b));
     let max_interval = intervals.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
     
     println!("  → Timestamp analysis: {} valid intervals, avg={:.1}s, min={:.1}s, max={:.1}s", 
              intervals.len(), average_interval, min_interval, max_interval);
     
+    // Return rounded average
     average_interval.round() as u32
 }
 
@@ -322,3 +313,4 @@ fn gain_loss(elevs: &[f64]) -> (f64, f64) {
     }
     (gain, loss)
 }
+
