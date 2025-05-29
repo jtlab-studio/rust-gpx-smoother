@@ -6,178 +6,124 @@ use rayon::prelude::*;
 use std::sync::Arc;
 use crate::custom_smoother::{ElevationData, SmoothingVariant};
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum EnhancementType {
+    // Base approaches
+    Current,
+    CurrentTwoStage,
+    
+    // Parameter Tuning Variants
+    ConservativeTwoStage,
+    AdaptiveTwoStage,
+    GradientSpecificTwoStage,
+    
+    // Other enhancements
+    SelectiveApplication,
+    ConfidenceWeighted,
+    ClimbDescentAsymmetry,
+    LocalGradientValidation,
+    MinimumChangeFilter,
+}
+
 #[derive(Debug, Clone)]
-pub struct GpsQualityMetrics {
-    pub average_point_spacing_m: f64,
-    pub elevation_noise_ratio: f64,
-    pub sampling_frequency_hz: f64,
-    pub elevation_change_consistency: f64,
-    pub signal_gaps_count: u32,
-    pub quality_score: f64,
+pub struct EnhancementCombination {
+    pub name: String,
+    pub enhancements: Vec<EnhancementType>,
+}
+
+impl EnhancementCombination {
+    fn new(name: &str, enhancements: Vec<EnhancementType>) -> Self {
+        Self {
+            name: name.to_string(),
+            enhancements,
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Clone)]
 pub struct ComparativeAnalysisResult {
     interval_m: f32,
-    // Current approach (baseline)
-    current_score_98_102: u32,
-    current_score_95_105: u32,
-    current_score_90_110: u32,
-    current_files_outside_80_120: u32,
-    current_weighted_score: f32,
-    current_median_accuracy: f32,
-    current_worst_accuracy: f32,
-    current_total_files: u32,
-    
-    // Current + Gap Detection
-    current_gap_score_98_102: u32,
-    current_gap_score_95_105: u32,
-    current_gap_score_90_110: u32,
-    current_gap_files_outside_80_120: u32,
-    current_gap_weighted_score: f32,
-    current_gap_median_accuracy: f32,
-    current_gap_worst_accuracy: f32,
-    
-    // Current + Enhanced Two-Stage
-    current_two_stage_score_98_102: u32,
-    current_two_stage_score_95_105: u32,
-    current_two_stage_score_90_110: u32,
-    current_two_stage_files_outside_80_120: u32,
-    current_two_stage_weighted_score: f32,
-    current_two_stage_median_accuracy: f32,
-    current_two_stage_worst_accuracy: f32,
-    
-    // Current + Quality Weighting
-    current_quality_score_98_102: u32,
-    current_quality_score_95_105: u32,
-    current_quality_score_90_110: u32,
-    current_quality_files_outside_80_120: u32,
-    current_quality_weighted_score: f32,
-    current_quality_median_accuracy: f32,
-    current_quality_worst_accuracy: f32,
-    
-    // Current + Adaptive Intervals
-    current_adaptive_score_98_102: u32,
-    current_adaptive_score_95_105: u32,
-    current_adaptive_score_90_110: u32,
-    current_adaptive_files_outside_80_120: u32,
-    current_adaptive_weighted_score: f32,
-    current_adaptive_median_accuracy: f32,
-    current_adaptive_worst_accuracy: f32,
-    
-    // Current + All Enhancements
-    current_all_score_98_102: u32,
-    current_all_score_95_105: u32,
-    current_all_score_90_110: u32,
-    current_all_files_outside_80_120: u32,
-    current_all_weighted_score: f32,
-    current_all_median_accuracy: f32,
-    current_all_worst_accuracy: f32,
+    approach_results: Vec<ApproachResult>,
 }
 
-// Enhancement parameters
+#[derive(Debug, Serialize, Clone)]
+pub struct ApproachResult {
+    approach_name: String,
+    score_98_102: u32,
+    score_95_105: u32,
+    score_90_110: u32,
+    files_outside_80_120: u32,
+    weighted_score: f32,
+    median_accuracy: f32,
+    worst_accuracy: f32,
+    total_files: u32,
+    // New metrics to track gain vs loss
+    average_gain_change_percent: f32,
+    average_loss_change_percent: f32,
+}
+
+// Enhancement parameters with justified values
 #[derive(Debug, Clone)]
 struct EnhancementParams {
-    // Gap detection
-    gap_distance_threshold: f64,  // meters
-    gap_time_threshold: f64,      // seconds
-    gap_interpolation_interval: f64, // meters
+    // Conservative two-stage
+    conservative_gradient_iqr: f64,  // 1.5 (tighter than 2.0)
+    conservative_rate_iqr: f64,      // 2.5 (tighter than 3.0)
     
-    // Two-stage outlier
-    gradient_iqr_multiplier: f64,
-    rate_iqr_multiplier: f64,
+    // Climb/descent asymmetry
+    max_climb_gradient: f64,         // 35% for climbs
+    max_descent_gradient: f64,       // 60% for descents
+    max_climb_rate_m_per_hour: f64,  // 1000 m/hr
     
-    // Quality weighting
-    quality_threshold_low: f64,
-    quality_threshold_high: f64,
+    // Minimum change filter
+    min_change_flat: f64,            // 0.3m for flat terrain
+    min_change_rolling: f64,         // 0.5m for rolling
+    min_change_mountainous: f64,     // 1.0m for mountains
     
-    // Adaptive intervals
-    min_interval: f64,
-    max_interval: f64,
-    interval_quality_factor: f64,
+    // Confidence thresholds
+    confidence_smoothing_factor: f64, // 0.0-1.0 smoothing weight
 }
 
 impl Default for EnhancementParams {
     fn default() -> Self {
         Self {
-            gap_distance_threshold: 200.0,
-            gap_time_threshold: 30.0,
-            gap_interpolation_interval: 50.0,
-            gradient_iqr_multiplier: 2.0,
-            rate_iqr_multiplier: 3.0,
-            quality_threshold_low: 0.3,
-            quality_threshold_high: 0.7,
-            min_interval: 1.5,
-            max_interval: 6.0,
-            interval_quality_factor: 1.0,
+            conservative_gradient_iqr: 1.5,
+            conservative_rate_iqr: 2.5,
+            max_climb_gradient: 35.0,
+            max_descent_gradient: 60.0,
+            max_climb_rate_m_per_hour: 1000.0,
+            min_change_flat: 0.3,
+            min_change_rolling: 0.5,
+            min_change_mountainous: 1.0,
+            confidence_smoothing_factor: 0.7,
         }
-    }
-}
-
-#[derive(Debug, Clone)]
-struct TerrainMetrics {
-    gain_per_km: f64,
-    elevation_variance: f64,
-    gradient_std_dev: f64,
-    terrain_type: TerrainType,
-}
-
-#[derive(Debug, Clone)]
-enum TerrainType {
-    Flat,         // < 20m/km
-    Rolling,      // 20-40m/km  
-    Hilly,        // 40-80m/km
-    Mountainous,  // > 80m/km
-}
-
-fn classify_terrain(gain_per_km: f64) -> TerrainType {
-    if gain_per_km < 20.0 {
-        TerrainType::Flat
-    } else if gain_per_km < 40.0 {
-        TerrainType::Rolling
-    } else if gain_per_km < 80.0 {
-        TerrainType::Hilly
-    } else {
-        TerrainType::Mountainous
     }
 }
 
 pub fn run_enhanced_comparative_analysis(gpx_folder: &str) -> Result<(), Box<dyn std::error::Error>> {
     let total_start = std::time::Instant::now();
     
-    println!("\n🔬 COMPLEMENTARY ENHANCEMENTS ANALYSIS");
-    println!("======================================");
-    println!("Testing approaches that BUILD ON the current method:");
-    println!("1. Current (Baseline) - 77.7% success");
-    println!("2. Current + Gap Detection");
-    println!("3. Current + Enhanced Two-Stage");
-    println!("4. Current + Quality Weighting");
-    println!("5. Current + Adaptive Intervals");
-    println!("6. Current + All Enhancements");
-    println!("\nInterval range: 0.5m to 4.0m (0.1m increments)");
-    println!("Total intervals: 36");
+    println!("\n🔬 COMPREHENSIVE 26-APPROACH ANALYSIS");
+    println!("=====================================");
+    println!("Testing all enhancement combinations on elevation gain AND loss");
     
-    let input_csv = Path::new(gpx_folder).join("fine_grained_analysis_0.05_to_8m.csv");
+    // Define all 26 approach combinations
+    let approaches = define_all_approaches();
+    println!("📊 Total approaches to test: {}", approaches.len());
     
-    if !input_csv.exists() {
-        eprintln!("Error: Fine-grained analysis CSV not found. Run the main analysis first.");
-        return Ok(());
-    }
-    
-    // Load GPX files and their data
+    // Load GPX data
     println!("\n📂 Loading GPX files...");
     let start = std::time::Instant::now();
     let (gpx_files_data, valid_files) = load_gpx_data(gpx_folder)?;
     println!("✅ Loaded {} files in {:.2}s", valid_files.len(), start.elapsed().as_secs_f64());
     
-    // Filter out files with 0% elevation data
+    // Filter files with elevation data
     let files_with_elevation: Vec<_> = valid_files.into_iter()
         .filter(|file| {
             if let Some(data) = gpx_files_data.get(file) {
                 let has_elevation = data.elevations.iter()
                     .any(|&e| (e - data.elevations[0]).abs() > 0.1);
                 if !has_elevation {
-                    println!("⚠️  Excluding {} - no elevation variation detected", file);
+                    println!("⚠️  Excluding {} - no elevation variation", file);
                 }
                 has_elevation
             } else {
@@ -188,16 +134,16 @@ pub fn run_enhanced_comparative_analysis(gpx_folder: &str) -> Result<(), Box<dyn
     
     println!("📊 Processing {} files with valid elevation data", files_with_elevation.len());
     
-    // Process with all approaches
+    // Process all approaches
     let processing_start = std::time::Instant::now();
-    let results = process_all_approaches_comprehensive(&gpx_files_data, &files_with_elevation)?;
+    let results = process_all_approaches(&gpx_files_data, &files_with_elevation, &approaches)?;
     println!("✅ Processing complete in {:.2}s", processing_start.elapsed().as_secs_f64());
     
     // Write results
-    write_comprehensive_results(&results, Path::new(gpx_folder).join("complementary_enhancements_analysis.csv"))?;
+    write_comprehensive_results(&results, &approaches, Path::new(gpx_folder).join("26_approaches_analysis.csv"))?;
     
-    // Print summary
-    print_comprehensive_summary(&results);
+    // Print summary including gain/loss analysis
+    print_comprehensive_summary(&results, &approaches);
     
     let total_time = total_start.elapsed();
     println!("\n⏱️  TOTAL EXECUTION TIME: {} minutes {:.1} seconds", 
@@ -207,6 +153,60 @@ pub fn run_enhanced_comparative_analysis(gpx_folder: &str) -> Result<(), Box<dyn
     Ok(())
 }
 
+fn define_all_approaches() -> Vec<EnhancementCombination> {
+    use EnhancementType::*;
+    
+    vec![
+        // Base approaches (2)
+        EnhancementCombination::new("1. Current", vec![Current]),
+        EnhancementCombination::new("2. Current + Two-Stage", vec![CurrentTwoStage]),
+        
+        // Single enhancements on Current (6)
+        EnhancementCombination::new("3. Current + Conservative", vec![Current, ConservativeTwoStage]),
+        EnhancementCombination::new("4. Current + Adaptive", vec![Current, AdaptiveTwoStage]),
+        EnhancementCombination::new("5. Current + Gradient-Specific", vec![Current, GradientSpecificTwoStage]),
+        EnhancementCombination::new("6. Current + Selective", vec![Current, SelectiveApplication]),
+        EnhancementCombination::new("7. Current + Confidence", vec![Current, ConfidenceWeighted]),
+        EnhancementCombination::new("8. Current + Asymmetry", vec![Current, ClimbDescentAsymmetry]),
+        EnhancementCombination::new("9. Current + Gradient-Val", vec![Current, LocalGradientValidation]),
+        EnhancementCombination::new("10. Current + Min-Change", vec![Current, MinimumChangeFilter]),
+        
+        // Single enhancements on Two-Stage (6)
+        EnhancementCombination::new("11. Two-Stage + Conservative", vec![CurrentTwoStage, ConservativeTwoStage]),
+        EnhancementCombination::new("12. Two-Stage + Adaptive", vec![CurrentTwoStage, AdaptiveTwoStage]),
+        EnhancementCombination::new("13. Two-Stage + Gradient-Specific", vec![CurrentTwoStage, GradientSpecificTwoStage]),
+        EnhancementCombination::new("14. Two-Stage + Selective", vec![CurrentTwoStage, SelectiveApplication]),
+        EnhancementCombination::new("15. Two-Stage + Confidence", vec![CurrentTwoStage, ConfidenceWeighted]),
+        EnhancementCombination::new("16. Two-Stage + Asymmetry", vec![CurrentTwoStage, ClimbDescentAsymmetry]),
+        EnhancementCombination::new("17. Two-Stage + Gradient-Val", vec![CurrentTwoStage, LocalGradientValidation]),
+        EnhancementCombination::new("18. Two-Stage + Min-Change", vec![CurrentTwoStage, MinimumChangeFilter]),
+        
+        // Key two-enhancement combinations (4)
+        EnhancementCombination::new("19. Current + Adaptive + Asymmetry", 
+            vec![Current, AdaptiveTwoStage, ClimbDescentAsymmetry]),
+        EnhancementCombination::new("20. Current + Adaptive + Min-Change", 
+            vec![Current, AdaptiveTwoStage, MinimumChangeFilter]),
+        EnhancementCombination::new("21. Two-Stage + Adaptive + Asymmetry", 
+            vec![CurrentTwoStage, AdaptiveTwoStage, ClimbDescentAsymmetry]),
+        EnhancementCombination::new("22. Two-Stage + Adaptive + Min-Change", 
+            vec![CurrentTwoStage, AdaptiveTwoStage, MinimumChangeFilter]),
+        
+        // Best three-enhancement combinations (2)
+        EnhancementCombination::new("23. Current + Adaptive + Asymmetry + Min", 
+            vec![Current, AdaptiveTwoStage, ClimbDescentAsymmetry, MinimumChangeFilter]),
+        EnhancementCombination::new("24. Two-Stage + Adaptive + Asymmetry + Min", 
+            vec![CurrentTwoStage, AdaptiveTwoStage, ClimbDescentAsymmetry, MinimumChangeFilter]),
+        
+        // Kitchen sink (2)
+        EnhancementCombination::new("25. Current + All", 
+            vec![Current, ConservativeTwoStage, SelectiveApplication, ConfidenceWeighted, 
+                 ClimbDescentAsymmetry, LocalGradientValidation, MinimumChangeFilter]),
+        EnhancementCombination::new("26. Two-Stage + All", 
+            vec![CurrentTwoStage, AdaptiveTwoStage, SelectiveApplication, ConfidenceWeighted,
+                 ClimbDescentAsymmetry, LocalGradientValidation, MinimumChangeFilter]),
+    ]
+}
+
 #[derive(Debug, Clone)]
 struct GpxFileData {
     filename: String,
@@ -214,15 +214,6 @@ struct GpxFileData {
     distances: Vec<f64>,
     timestamps: Vec<f64>,
     official_gain: u32,
-}
-
-#[derive(Debug, Clone)]
-struct SegmentQuality {
-    start_idx: usize,
-    end_idx: usize,
-    quality_score: f64,
-    has_gaps: bool,
-    noise_level: f64,
 }
 
 fn load_gpx_data(gpx_folder: &str) -> Result<(HashMap<String, GpxFileData>, Vec<String>), Box<dyn std::error::Error>> {
@@ -323,69 +314,61 @@ fn load_gpx_data(gpx_folder: &str) -> Result<(HashMap<String, GpxFileData>, Vec<
     Ok((gpx_data, valid_files))
 }
 
-fn process_all_approaches_comprehensive(
+fn process_all_approaches(
     gpx_data: &HashMap<String, GpxFileData>,
-    valid_files: &[String]
+    valid_files: &[String],
+    approaches: &[EnhancementCombination]
 ) -> Result<Vec<ComparativeAnalysisResult>, Box<dyn std::error::Error>> {
     // Test intervals from 0.5m to 4.0m in 0.1m increments
     let intervals: Vec<f32> = (5..=40).map(|i| i as f32 * 0.1).collect();
     
     let gpx_data_arc = Arc::new(gpx_data.clone());
     
-    println!("\n🚀 Processing {} intervals × {} files × 6 approaches = {} total calculations",
-             intervals.len(), valid_files.len(), intervals.len() * valid_files.len() * 6);
+    println!("\n🚀 Processing {} intervals × {} files × {} approaches = {} total calculations",
+             intervals.len(), valid_files.len(), approaches.len(), 
+             intervals.len() * valid_files.len() * approaches.len());
     println!("⚡ Using parallel processing on {} cores", num_cpus::get());
     
-    let work_items: Vec<(f32, String)> = intervals.iter()
+    // Create work items
+    let work_items: Vec<(f32, String, usize)> = intervals.iter()
         .flat_map(|&interval| {
-            valid_files.iter().map(move |file| (interval, file.clone()))
+            valid_files.iter().flat_map(move |file| {
+                (0..approaches.len()).map(move |approach_idx| {
+                    (interval, file.clone(), approach_idx)
+                })
+            })
         })
         .collect();
     
-    println!("📊 Creating {} work items for parallel processing...", work_items.len());
+    println!("📊 Created {} work items for parallel processing...", work_items.len());
     
     let processed = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let total_items = work_items.len();
     let start_time = std::time::Instant::now();
     
     // Process all work items in parallel
-    let all_results: Vec<(f32, String, Vec<f32>)> = work_items
+    let all_results: Vec<(f32, String, usize, f32, f32, f32)> = work_items
         .par_iter()
-        .filter_map(|(interval, filename)| {
+        .filter_map(|(interval, filename, approach_idx)| {
             let gpx_data = Arc::clone(&gpx_data_arc);
             let processed_clone = Arc::clone(&processed);
             
             if let Some(file_data) = gpx_data.get(filename) {
                 if file_data.official_gain > 0 {
-                    let mut accuracies = Vec::new();
+                    // Process with specific approach
+                    let (gain, loss, raw_gain, raw_loss) = process_with_approach(
+                        file_data, 
+                        *interval, 
+                        &approaches[*approach_idx]
+                    );
                     
-                    // 1. Current approach (baseline)
-                    let current_gain = calculate_current_approach(file_data, *interval);
-                    accuracies.push((current_gain as f32 / file_data.official_gain as f32) * 100.0);
-                    
-                    // 2. Current + Gap Detection
-                    let current_gap_gain = calculate_current_plus_gap_detection(file_data, *interval);
-                    accuracies.push((current_gap_gain as f32 / file_data.official_gain as f32) * 100.0);
-                    
-                    // 3. Current + Enhanced Two-Stage
-                    let current_two_stage_gain = calculate_current_plus_enhanced_two_stage(file_data, *interval);
-                    accuracies.push((current_two_stage_gain as f32 / file_data.official_gain as f32) * 100.0);
-                    
-                    // 4. Current + Quality Weighting
-                    let current_quality_gain = calculate_current_plus_quality_weighting(file_data, *interval);
-                    accuracies.push((current_quality_gain as f32 / file_data.official_gain as f32) * 100.0);
-                    
-                    // 5. Current + Adaptive Intervals
-                    let current_adaptive_gain = calculate_current_plus_adaptive_intervals(file_data, *interval);
-                    accuracies.push((current_adaptive_gain as f32 / file_data.official_gain as f32) * 100.0);
-                    
-                    // 6. Current + All Enhancements
-                    let current_all_gain = calculate_current_plus_all_enhancements(file_data, *interval);
-                    accuracies.push((current_all_gain as f32 / file_data.official_gain as f32) * 100.0);
+                    let accuracy = (gain as f32 / file_data.official_gain as f32) * 100.0;
+                    let gain_change = ((gain as f32 - raw_gain as f32) / raw_gain as f32) * 100.0;
+                    let loss_change = ((loss as f32 - raw_loss as f32) / raw_loss as f32) * 100.0;
                     
                     // Update progress
                     let count = processed_clone.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-                    if count % 500 == 0 {
+                    if count % 1000 == 0 || count == total_items {
                         let elapsed = start_time.elapsed().as_secs_f64();
                         let rate = count as f64 / elapsed;
                         let remaining = (total_items - count) as f64 / rate;
@@ -395,7 +378,7 @@ fn process_all_approaches_comprehensive(
                                  rate, remaining);
                     }
                     
-                    return Some((*interval, filename.clone(), accuracies));
+                    return Some((*interval, filename.clone(), *approach_idx, accuracy, gain_change, loss_change));
                 }
             }
             None
@@ -404,527 +387,130 @@ fn process_all_approaches_comprehensive(
     
     println!("✅ Parallel processing complete, aggregating results...");
     
-    // Group results by interval
-    let mut interval_results: HashMap<i32, Vec<Vec<f32>>> = HashMap::new();
+    // Aggregate results by interval
+    let mut results = Vec::new();
     
-    for (interval, _filename, accuracies) in all_results {
-        let key = (interval * 10.0) as i32;
-        interval_results.entry(key)
-            .or_insert_with(Vec::new)
-            .push(accuracies);
-    }
-    
-    // Convert to final results
-    let results: Vec<ComparativeAnalysisResult> = intervals
-        .iter()
-        .map(|&interval| {
-            let key = (interval * 10.0) as i32;
-            let all_accuracies = interval_results.get(&key).cloned().unwrap_or_default();
-            
-            let approach_accuracies: Vec<Vec<f32>> = (0..6).map(|i| {
-                all_accuracies.iter().map(|acc| acc.get(i).copied().unwrap_or(100.0)).collect()
-            }).collect();
-            
-            let metrics: Vec<_> = approach_accuracies.iter()
-                .map(|accs| calculate_accuracy_metrics(accs))
+    for interval in intervals {
+        let mut approach_results = Vec::new();
+        
+        for (idx, approach) in approaches.iter().enumerate() {
+            let approach_data: Vec<_> = all_results.iter()
+                .filter(|(i, _, a, _, _, _)| *i == interval && *a == idx)
                 .collect();
             
-            ComparativeAnalysisResult {
-                interval_m: interval,
-                // Current
-                current_score_98_102: metrics[0].0,
-                current_score_95_105: metrics[0].1,
-                current_score_90_110: metrics[0].2,
-                current_files_outside_80_120: metrics[0].3,
-                current_weighted_score: metrics[0].4,
-                current_median_accuracy: metrics[0].5,
-                current_worst_accuracy: metrics[0].6,
-                current_total_files: approach_accuracies[0].len() as u32,
-                // Current + Gap
-                current_gap_score_98_102: metrics[1].0,
-                current_gap_score_95_105: metrics[1].1,
-                current_gap_score_90_110: metrics[1].2,
-                current_gap_files_outside_80_120: metrics[1].3,
-                current_gap_weighted_score: metrics[1].4,
-                current_gap_median_accuracy: metrics[1].5,
-                current_gap_worst_accuracy: metrics[1].6,
-                // Current + Two-Stage
-                current_two_stage_score_98_102: metrics[2].0,
-                current_two_stage_score_95_105: metrics[2].1,
-                current_two_stage_score_90_110: metrics[2].2,
-                current_two_stage_files_outside_80_120: metrics[2].3,
-                current_two_stage_weighted_score: metrics[2].4,
-                current_two_stage_median_accuracy: metrics[2].5,
-                current_two_stage_worst_accuracy: metrics[2].6,
-                // Current + Quality
-                current_quality_score_98_102: metrics[3].0,
-                current_quality_score_95_105: metrics[3].1,
-                current_quality_score_90_110: metrics[3].2,
-                current_quality_files_outside_80_120: metrics[3].3,
-                current_quality_weighted_score: metrics[3].4,
-                current_quality_median_accuracy: metrics[3].5,
-                current_quality_worst_accuracy: metrics[3].6,
-                // Current + Adaptive
-                current_adaptive_score_98_102: metrics[4].0,
-                current_adaptive_score_95_105: metrics[4].1,
-                current_adaptive_score_90_110: metrics[4].2,
-                current_adaptive_files_outside_80_120: metrics[4].3,
-                current_adaptive_weighted_score: metrics[4].4,
-                current_adaptive_median_accuracy: metrics[4].5,
-                current_adaptive_worst_accuracy: metrics[4].6,
-                // Current + All
-                current_all_score_98_102: metrics[5].0,
-                current_all_score_95_105: metrics[5].1,
-                current_all_score_90_110: metrics[5].2,
-                current_all_files_outside_80_120: metrics[5].3,
-                current_all_weighted_score: metrics[5].4,
-                current_all_median_accuracy: metrics[5].5,
-                current_all_worst_accuracy: metrics[5].6,
+            if !approach_data.is_empty() {
+                let accuracies: Vec<f32> = approach_data.iter().map(|(_, _, _, acc, _, _)| *acc).collect();
+                let gain_changes: Vec<f32> = approach_data.iter().map(|(_, _, _, _, gc, _)| *gc).collect();
+                let loss_changes: Vec<f32> = approach_data.iter().map(|(_, _, _, _, _, lc)| *lc).collect();
+                
+                let metrics = calculate_accuracy_metrics(&accuracies);
+                let avg_gain_change = gain_changes.iter().sum::<f32>() / gain_changes.len() as f32;
+                let avg_loss_change = loss_changes.iter().sum::<f32>() / loss_changes.len() as f32;
+                
+                approach_results.push(ApproachResult {
+                    approach_name: approach.name.clone(),
+                    score_98_102: metrics.0,
+                    score_95_105: metrics.1,
+                    score_90_110: metrics.2,
+                    files_outside_80_120: metrics.3,
+                    weighted_score: metrics.4,
+                    median_accuracy: metrics.5,
+                    worst_accuracy: metrics.6,
+                    total_files: accuracies.len() as u32,
+                    average_gain_change_percent: avg_gain_change,
+                    average_loss_change_percent: avg_loss_change,
+                });
             }
-        })
-        .collect();
+        }
+        
+        results.push(ComparativeAnalysisResult {
+            interval_m: interval,
+            approach_results,
+        });
+    }
     
     Ok(results)
 }
 
-// Current approach (baseline)
-fn calculate_current_approach(file_data: &GpxFileData, interval: f32) -> u32 {
-    let cleaned_elevations = remove_statistical_outliers(&file_data.elevations, &file_data.distances);
-    
-    let cleaned_file_data = GpxFileData {
-        filename: file_data.filename.clone(),
-        elevations: cleaned_elevations,
-        distances: file_data.distances.clone(),
-        timestamps: file_data.timestamps.clone(),
-        official_gain: file_data.official_gain,
-    };
-    
-    calculate_baseline_gain(&cleaned_file_data, interval)
-}
-
-// Complementary approaches that build on Current
-
-fn calculate_current_plus_gap_detection(file_data: &GpxFileData, interval: f32) -> u32 {
-    let params = EnhancementParams::default();
-    
-    // First: Fill gaps in the raw data
-    let filled_data = apply_gap_detection_filling(file_data, &params);
-    
-    // Then: Apply Current's proven outlier removal
-    let cleaned_elevations = remove_statistical_outliers(&filled_data.elevations, &filled_data.distances);
-    
-    let enhanced_data = GpxFileData {
-        filename: filled_data.filename.clone(),
-        elevations: cleaned_elevations,
-        distances: filled_data.distances.clone(),
-        timestamps: filled_data.timestamps.clone(),
-        official_gain: filled_data.official_gain,
-    };
-    
-    // Finally: Standard baseline calculation
-    calculate_baseline_gain(&enhanced_data, interval)
-}
-
-fn calculate_current_plus_enhanced_two_stage(file_data: &GpxFileData, interval: f32) -> u32 {
-    let params = EnhancementParams::default();
-    
-    // Start with Current's outlier removal
-    let cleaned_elevations = remove_statistical_outliers(&file_data.elevations, &file_data.distances);
-    
-    let cleaned_data = GpxFileData {
-        filename: file_data.filename.clone(),
-        elevations: cleaned_elevations,
-        distances: file_data.distances.clone(),
-        timestamps: file_data.timestamps.clone(),
-        official_gain: file_data.official_gain,
-    };
-    
-    // Add the second stage (elevation gain rate outlier removal)
-    let enhanced_data = apply_second_stage_outlier_removal(&cleaned_data, &params);
-    
-    calculate_baseline_gain(&enhanced_data, interval)
-}
-
-fn calculate_current_plus_quality_weighting(file_data: &GpxFileData, interval: f32) -> u32 {
-    let params = EnhancementParams::default();
-    
-    // First: Current's outlier removal
-    let cleaned_elevations = remove_statistical_outliers(&file_data.elevations, &file_data.distances);
-    
-    let cleaned_data = GpxFileData {
-        filename: file_data.filename.clone(),
-        elevations: cleaned_elevations,
-        distances: file_data.distances.clone(),
-        timestamps: file_data.timestamps.clone(),
-        official_gain: file_data.official_gain,
-    };
-    
-    // Calculate quality scores for each point
-    let quality_scores = calculate_point_quality_scores(&cleaned_data);
-    
-    // Apply quality-weighted processing
-    let enhanced_data = apply_quality_weighted_processing(&cleaned_data, &quality_scores, &params);
-    
-    calculate_baseline_gain(&enhanced_data, interval)
-}
-
-fn calculate_current_plus_adaptive_intervals(file_data: &GpxFileData, base_interval: f32) -> u32 {
-    let params = EnhancementParams::default();
-    
-    // First: Current's outlier removal
-    let cleaned_elevations = remove_statistical_outliers(&file_data.elevations, &file_data.distances);
-    
-    let cleaned_data = GpxFileData {
-        filename: file_data.filename.clone(),
-        elevations: cleaned_elevations,
-        distances: file_data.distances.clone(),
-        timestamps: file_data.timestamps.clone(),
-        official_gain: file_data.official_gain,
-    };
-    
-    // Calculate adaptive intervals based on local quality
-    let intervals = calculate_adaptive_intervals(&cleaned_data, base_interval, &params);
-    
-    // Process with adaptive intervals
-    calculate_with_adaptive_intervals(&cleaned_data, &intervals)
-}
-
-fn calculate_current_plus_all_enhancements(file_data: &GpxFileData, base_interval: f32) -> u32 {
-    let params = EnhancementParams::default();
-    
-    // Step 1: Gap detection on raw data
-    let filled_data = apply_gap_detection_filling(file_data, &params);
-    
-    // Step 2: Current's outlier removal
-    let cleaned_elevations = remove_statistical_outliers(&filled_data.elevations, &filled_data.distances);
-    
-    let cleaned_data = GpxFileData {
-        filename: filled_data.filename.clone(),
-        elevations: cleaned_elevations,
-        distances: filled_data.distances.clone(),
-        timestamps: filled_data.timestamps.clone(),
-        official_gain: filled_data.official_gain,
-    };
-    
-    // Step 3: Second stage outlier removal
-    let two_stage_data = apply_second_stage_outlier_removal(&cleaned_data, &params);
-    
-    // Step 4: Quality weighting
-    let quality_scores = calculate_point_quality_scores(&two_stage_data);
-    let quality_weighted_data = apply_quality_weighted_processing(&two_stage_data, &quality_scores, &params);
-    
-    // Step 5: Adaptive intervals
-    let intervals = calculate_adaptive_intervals(&quality_weighted_data, base_interval, &params);
-    
-    // Final calculation
-    calculate_with_adaptive_intervals(&quality_weighted_data, &intervals)
-}
-
-// Enhancement implementations
-
-fn apply_gap_detection_filling(file_data: &GpxFileData, params: &EnhancementParams) -> GpxFileData {
-    let mut filled_elevations = file_data.elevations.clone();
-    let mut filled_distances = file_data.distances.clone();
-    let mut filled_timestamps = file_data.timestamps.clone();
-    
-    // Detect gaps
-    let mut gaps = Vec::new();
-    for i in 1..file_data.distances.len() {
-        let dist_gap = file_data.distances[i] - file_data.distances[i-1];
-        let time_gap = file_data.timestamps[i] - file_data.timestamps[i-1];
-        
-        if dist_gap > params.gap_distance_threshold || time_gap > params.gap_time_threshold {
-            gaps.push((i-1, i));
-        }
-    }
-    
-    // Fill gaps with interpolated points
-    for (start, end) in gaps.iter().rev() {
-        let points_to_insert = ((file_data.distances[*end] - file_data.distances[*start]) / params.gap_interpolation_interval) as usize;
-        
-        for j in 1..=points_to_insert {
-            let t = j as f64 / (points_to_insert + 1) as f64;
-            let interp_dist = file_data.distances[*start] * (1.0 - t) + file_data.distances[*end] * t;
-            let interp_elev = file_data.elevations[*start] * (1.0 - t) + file_data.elevations[*end] * t;
-            let interp_time = file_data.timestamps[*start] * (1.0 - t) + file_data.timestamps[*end] * t;
-            
-            filled_distances.insert(*start + j, interp_dist);
-            filled_elevations.insert(*start + j, interp_elev);
-            filled_timestamps.insert(*start + j, interp_time);
-        }
-    }
-    
-    GpxFileData {
-        filename: file_data.filename.clone(),
-        elevations: filled_elevations,
-        distances: filled_distances,
-        timestamps: filled_timestamps,
-        official_gain: file_data.official_gain,
-    }
-}
-
-fn apply_second_stage_outlier_removal(file_data: &GpxFileData, params: &EnhancementParams) -> GpxFileData {
-    let mut cleaned_elevations = file_data.elevations.clone();
-    
-    // Calculate elevation gain rates (m/min)
-    let mut gain_rates = Vec::new();
-    for i in 1..file_data.elevations.len() {
-        let elev_change = file_data.elevations[i] - file_data.elevations[i-1];
-        let time_change = file_data.timestamps[i] - file_data.timestamps[i-1];
-        
-        if time_change > 0.0 && elev_change > 0.0 {
-            let rate = (elev_change / time_change) * 60.0; // m/min
-            gain_rates.push(rate);
-        }
-    }
-    
-    if gain_rates.len() > 4 {
-        // Calculate IQR for gain rates
-        let mut sorted_rates = gain_rates.clone();
-        sorted_rates.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        
-        let q1 = sorted_rates[sorted_rates.len() / 4];
-        let q3 = sorted_rates[(sorted_rates.len() * 3) / 4];
-        let iqr = q3 - q1;
-        
-        let upper_bound = q3 + params.rate_iqr_multiplier * iqr;
-        
-        // Smooth outlier gain rates
-        let mut rate_idx = 0;
-        for i in 1..cleaned_elevations.len() {
-            if file_data.timestamps[i] - file_data.timestamps[i-1] > 0.0 {
-                let elev_change = cleaned_elevations[i] - cleaned_elevations[i-1];
-                let time_change = file_data.timestamps[i] - file_data.timestamps[i-1];
-                let rate = (elev_change / time_change) * 60.0;
-                
-                if elev_change > 0.0 && rate > upper_bound && rate_idx < gain_rates.len() {
-                    let max_rate = upper_bound;
-                    let max_change = (max_rate / 60.0) * time_change;
-                    cleaned_elevations[i] = cleaned_elevations[i-1] + max_change;
-                }
-                rate_idx += 1;
-            }
-        }
-    }
-    
-    GpxFileData {
-        filename: file_data.filename.clone(),
-        elevations: cleaned_elevations,
-        distances: file_data.distances.clone(),
-        timestamps: file_data.timestamps.clone(),
-        official_gain: file_data.official_gain,
-    }
-}
-
-fn calculate_point_quality_scores(file_data: &GpxFileData) -> Vec<f64> {
-    let mut quality_scores = vec![1.0; file_data.elevations.len()];
-    let window_size = 10;
-    
-    for i in 0..file_data.elevations.len() {
-        let start_idx = if i >= window_size / 2 { i - window_size / 2 } else { 0 };
-        let end_idx = if i + window_size / 2 < file_data.elevations.len() { 
-            i + window_size / 2 
-        } else { 
-            file_data.elevations.len() - 1 
-        };
-        
-        let mut quality: f64 = 1.0;
-        
-        // Check local point density
-        if end_idx > start_idx {
-            let distance_span = file_data.distances[end_idx] - file_data.distances[start_idx];
-            let point_count = end_idx - start_idx + 1;
-            let avg_spacing = distance_span / point_count as f64;
-            
-            if avg_spacing > 50.0 {
-                quality *= 0.5; // Sparse data
-            } else if avg_spacing < 2.0 {
-                quality *= 0.8; // Very dense (might be noisy)
-            }
-        }
-        
-        // Check gradient consistency
-        if i > 0 && i < file_data.elevations.len() - 1 {
-            let grad1 = (file_data.elevations[i] - file_data.elevations[i-1]) / 
-                       (file_data.distances[i] - file_data.distances[i-1] + 0.001);
-            let grad2 = (file_data.elevations[i+1] - file_data.elevations[i]) / 
-                       (file_data.distances[i+1] - file_data.distances[i] + 0.001);
-            
-            let grad_change = (grad1 - grad2).abs();
-            if grad_change > 0.5 {
-                quality *= 0.7; // Large gradient change
-            }
-        }
-        
-        quality_scores[i] = quality.max(0.1).min(1.0);
-    }
-    
-    quality_scores
-}
-
-fn apply_quality_weighted_processing(
+fn process_with_approach(
     file_data: &GpxFileData, 
-    quality_scores: &[f64],
-    params: &EnhancementParams
-) -> GpxFileData {
-    let mut processed_elevations = file_data.elevations.clone();
+    interval: f32,
+    approach: &EnhancementCombination
+) -> (u32, u32, u32, u32) { // (processed_gain, processed_loss, raw_gain, raw_loss)
+    use EnhancementType::*;
     
-    // Apply quality-weighted smoothing
-    for i in 1..processed_elevations.len() - 1 {
-        if quality_scores[i] < params.quality_threshold_low {
-            // Low quality point - use heavy smoothing
-            let weight = 0.2;
-            processed_elevations[i] = processed_elevations[i] * weight + 
-                                     (processed_elevations[i-1] + processed_elevations[i+1]) * 0.5 * (1.0 - weight);
-        } else if quality_scores[i] < params.quality_threshold_high {
-            // Medium quality - light smoothing
-            let weight = 0.7;
-            processed_elevations[i] = processed_elevations[i] * weight + 
-                                     (processed_elevations[i-1] + processed_elevations[i+1]) * 0.5 * (1.0 - weight);
-        }
-        // High quality points remain unchanged
-    }
+    // Calculate raw gain/loss for comparison
+    let (raw_gain, raw_loss) = calculate_raw_gain_loss(&file_data.elevations);
     
-    GpxFileData {
-        filename: file_data.filename.clone(),
-        elevations: processed_elevations,
-        distances: file_data.distances.clone(),
-        timestamps: file_data.timestamps.clone(),
-        official_gain: file_data.official_gain,
-    }
-}
-
-fn calculate_adaptive_intervals(
-    file_data: &GpxFileData,
-    base_interval: f32,
-    params: &EnhancementParams
-) -> Vec<f64> {
-    let mut intervals = Vec::new();
-    let window_size = 20;
+    let mut working_data = file_data.clone();
+    let params = EnhancementParams::default();
     
-    for i in 0..file_data.distances.len() {
-        let start_idx = if i >= window_size / 2 { i - window_size / 2 } else { 0 };
-        let end_idx = if i + window_size / 2 < file_data.distances.len() { 
-            i + window_size / 2 
-        } else { 
-            file_data.distances.len() - 1 
-        };
-        
-        // Calculate local quality
-        let local_quality = calculate_local_quality(file_data, start_idx, end_idx);
-        
-        // High quality -> smaller intervals, Low quality -> larger intervals
-        let quality_factor = 1.0 + params.interval_quality_factor * (1.0 - local_quality);
-        let interval = (base_interval as f64 * quality_factor)
-            .max(params.min_interval)
-            .min(params.max_interval);
-        
-        intervals.push(interval);
-    }
-    
-    intervals
-}
-
-fn calculate_local_quality(file_data: &GpxFileData, start: usize, end: usize) -> f64 {
-    if end <= start {
-        return 0.5;
-    }
-    
-    let mut quality_score: f64 = 1.0;
-    
-    // Check point density
-    let distance_span = file_data.distances[end] - file_data.distances[start];
-    let point_count = end - start + 1;
-    let avg_spacing = distance_span / point_count as f64;
-    
-    if avg_spacing > 50.0 {
-        quality_score *= 0.5; // Sparse data
-    } else if avg_spacing < 5.0 {
-        quality_score *= 0.9; // Very dense (might be noisy)
-    }
-    
-    // Check gradient consistency
-    let mut gradient_changes = Vec::new();
-    for i in (start + 1)..end {
-        let dist_diff = file_data.distances[i] - file_data.distances[i-1];
-        if dist_diff > 0.0 {
-            let gradient = (file_data.elevations[i] - file_data.elevations[i-1]) / dist_diff * 100.0;
-            gradient_changes.push(gradient);
+    // Apply enhancements in order
+    for enhancement in &approach.enhancements {
+        match enhancement {
+            Current => {
+                // Base statistical outlier removal
+                working_data.elevations = remove_statistical_outliers(
+                    &working_data.elevations, 
+                    &working_data.distances
+                );
+            },
+            CurrentTwoStage => {
+                // First apply current, then two-stage
+                working_data.elevations = remove_statistical_outliers(
+                    &working_data.elevations, 
+                    &working_data.distances
+                );
+                working_data = apply_standard_two_stage(&working_data, &params);
+            },
+            ConservativeTwoStage => {
+                working_data = apply_conservative_two_stage(&working_data, &params);
+            },
+            AdaptiveTwoStage => {
+                working_data = apply_adaptive_two_stage(&working_data, &params);
+            },
+            GradientSpecificTwoStage => {
+                working_data = apply_gradient_specific_two_stage(&working_data, &params);
+            },
+            SelectiveApplication => {
+                // Check if enhancement is needed
+                let current_accuracy = calculate_current_accuracy(&working_data);
+                if should_apply_enhancement(&working_data, current_accuracy) {
+                    // Apply adaptive two-stage as the selective enhancement
+                    working_data = apply_adaptive_two_stage(&working_data, &params);
+                }
+            },
+            ConfidenceWeighted => {
+                working_data = apply_confidence_weighted_outlier_removal(&working_data, &params);
+            },
+            ClimbDescentAsymmetry => {
+                working_data = apply_climb_descent_asymmetry(&working_data, &params);
+            },
+            LocalGradientValidation => {
+                working_data = apply_local_gradient_validation(&working_data, &params);
+            },
+            MinimumChangeFilter => {
+                working_data = apply_minimum_change_filter(&working_data, &params);
+            },
         }
     }
     
-    if !gradient_changes.is_empty() {
-        let gradient_variance = calculate_variance(&gradient_changes);
-        if gradient_variance > 100.0 {
-            quality_score *= 0.7; // High gradient variability
-        }
-    }
-    
-    quality_score.max(0.1).min(1.0)
-}
-
-fn calculate_with_adaptive_intervals(file_data: &GpxFileData, intervals: &[f64]) -> u32 {
-    if intervals.is_empty() {
-        return 0;
-    }
-    
-    let mut processed_elevations = Vec::new();
-    let mut processed_distances = Vec::new();
-    
-    let mut current_idx = 0;
-    let mut interval_idx = 0;
-    
-    while current_idx < file_data.elevations.len() {
-        processed_elevations.push(file_data.elevations[current_idx]);
-        processed_distances.push(file_data.distances[current_idx]);
-        
-        // Get interval for current position
-        let interval = intervals.get(interval_idx).unwrap_or(&3.7);
-        interval_idx = (interval_idx + 1).min(intervals.len() - 1);
-        
-        // Find next point based on adaptive interval
-        let target_dist = file_data.distances[current_idx] + interval;
-        let mut next_idx = current_idx + 1;
-        
-        while next_idx < file_data.distances.len() && file_data.distances[next_idx] < target_dist {
-            next_idx += 1;
-        }
-        
-        current_idx = next_idx;
-        
-        if current_idx >= file_data.distances.len() {
-            // Add last point if not already included
-            let last_idx = file_data.distances.len() - 1;
-            if processed_distances.last() != Some(&file_data.distances[last_idx]) {
-                processed_elevations.push(file_data.elevations[last_idx]);
-                processed_distances.push(file_data.distances[last_idx]);
-            }
-            break;
-        }
-    }
-    
-    // Calculate elevation gain using the processed data
-    let elevation_data = ElevationData::new_with_variant(
-        processed_elevations,
-        processed_distances,
-        SmoothingVariant::DistBased
-    );
-    
-    elevation_data.get_total_elevation_gain().round() as u32
-}
-
-// Helper functions
-
-fn calculate_baseline_gain(file_data: &GpxFileData, interval: f32) -> u32 {
+    // Calculate final elevation gain/loss using DistBased
     let mut elevation_data = ElevationData::new_with_variant(
-        file_data.elevations.clone(),
-        file_data.distances.clone(),
+        working_data.elevations,
+        working_data.distances,
         SmoothingVariant::DistBased
     );
     
     elevation_data.apply_custom_interval_processing(interval as f64);
-    elevation_data.get_total_elevation_gain().round() as u32
+    
+    let processed_gain = elevation_data.get_total_elevation_gain().round() as u32;
+    let processed_loss = elevation_data.get_total_elevation_loss().round() as u32;
+    
+    (processed_gain, processed_loss, raw_gain, raw_loss)
 }
+
+// Enhancement implementations
 
 fn remove_statistical_outliers(elevations: &[f64], distances: &[f64]) -> Vec<f64> {
     if elevations.len() < 10 {
@@ -933,6 +519,7 @@ fn remove_statistical_outliers(elevations: &[f64], distances: &[f64]) -> Vec<f64
     
     let mut cleaned = elevations.to_vec();
     
+    // Calculate gradients
     let mut gradients = Vec::new();
     for i in 1..elevations.len() {
         let dist_diff = distances[i] - distances[i-1];
@@ -942,30 +529,28 @@ fn remove_statistical_outliers(elevations: &[f64], distances: &[f64]) -> Vec<f64
         }
     }
     
+    if gradients.is_empty() {
+        return cleaned;
+    }
+    
+    // IQR-based outlier detection
     let mut sorted_gradients = gradients.clone();
     sorted_gradients.sort_by(|a, b| a.partial_cmp(b).unwrap());
     
-    let q1_idx = sorted_gradients.len() / 4;
-    let q3_idx = (sorted_gradients.len() * 3) / 4;
-    let q1 = sorted_gradients[q1_idx];
-    let q3 = sorted_gradients[q3_idx];
+    let q1 = sorted_gradients[sorted_gradients.len() / 4];
+    let q3 = sorted_gradients[(sorted_gradients.len() * 3) / 4];
     let iqr = q3 - q1;
     
     let lower_bound = q1 - 2.0 * iqr;
     let upper_bound = q3 + 2.0 * iqr;
     
+    // Smooth outliers
     for i in 1..elevations.len() - 1 {
-        if i < gradients.len() {
+        if i <= gradients.len() {
             let gradient = gradients[i-1];
-            
             if gradient < lower_bound || gradient > upper_bound {
-                let prev_valid = find_previous_valid_point(i, &gradients, lower_bound, upper_bound);
-                let next_valid = find_next_valid_point(i, &gradients, lower_bound, upper_bound);
-                
-                if let (Some(prev), Some(next)) = (prev_valid, next_valid) {
-                    let weight = (i - prev) as f64 / (next - prev) as f64;
-                    cleaned[i] = cleaned[prev] * (1.0 - weight) + cleaned[next] * weight;
-                }
+                // Linear interpolation
+                cleaned[i] = (cleaned[i-1] + cleaned[i+1]) / 2.0;
             }
         }
     }
@@ -973,43 +558,560 @@ fn remove_statistical_outliers(elevations: &[f64], distances: &[f64]) -> Vec<f64
     cleaned
 }
 
-fn find_previous_valid_point(
-    start: usize,
-    gradients: &[f64],
-    lower_bound: f64,
-    upper_bound: f64
-) -> Option<usize> {
-    for i in (0..start).rev() {
-        if i < gradients.len() && gradients[i] >= lower_bound && gradients[i] <= upper_bound {
-            return Some(i);
+fn apply_standard_two_stage(file_data: &GpxFileData, params: &EnhancementParams) -> GpxFileData {
+    let mut cleaned_data = file_data.clone();
+    
+    // Stage 2: Elevation gain rate outlier removal
+    let mut gain_rates = Vec::new();
+    for i in 1..file_data.elevations.len() {
+        let elev_change = file_data.elevations[i] - file_data.elevations[i-1];
+        let time_change = file_data.timestamps[i] - file_data.timestamps[i-1];
+        
+        if time_change > 0.0 && elev_change > 0.0 {
+            let rate = (elev_change / time_change) * 3600.0; // m/hour
+            gain_rates.push((i, rate));
         }
-    }
-    Some(0)
-}
-
-fn find_next_valid_point(
-    start: usize,
-    gradients: &[f64],
-    lower_bound: f64,
-    upper_bound: f64
-) -> Option<usize> {
-    for i in start..gradients.len() {
-        if gradients[i] >= lower_bound && gradients[i] <= upper_bound {
-            return Some(i + 1);
-        }
-    }
-    Some(gradients.len())
-}
-
-fn calculate_variance(values: &[f64]) -> f64 {
-    if values.is_empty() {
-        return 0.0;
     }
     
-    let mean = values.iter().sum::<f64>() / values.len() as f64;
-    values.iter()
-        .map(|&x| (x - mean).powi(2))
-        .sum::<f64>() / values.len() as f64
+    if gain_rates.len() > 4 {
+        let mut sorted_rates: Vec<f64> = gain_rates.iter().map(|(_, r)| *r).collect();
+        sorted_rates.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        
+        let q1 = sorted_rates[sorted_rates.len() / 4];
+        let q3 = sorted_rates[(sorted_rates.len() * 3) / 4];
+        let iqr = q3 - q1;
+        let upper_bound = q3 + 3.0 * iqr; // Standard multiplier
+        
+        for (idx, rate) in gain_rates {
+            if rate > upper_bound {
+                // Cap the elevation change
+                let time_change = cleaned_data.timestamps[idx] - cleaned_data.timestamps[idx-1];
+                let max_change = (upper_bound / 3600.0) * time_change;
+                cleaned_data.elevations[idx] = cleaned_data.elevations[idx-1] + max_change;
+            }
+        }
+    }
+    
+    cleaned_data
+}
+
+fn apply_conservative_two_stage(file_data: &GpxFileData, params: &EnhancementParams) -> GpxFileData {
+    let mut cleaned_data = file_data.clone();
+    
+    // Use tighter IQR multipliers
+    let gradient_multiplier = params.conservative_gradient_iqr; // 1.5
+    let rate_multiplier = params.conservative_rate_iqr; // 2.5
+    
+    // Apply gradient-based cleaning with tighter bounds
+    let mut gradients = Vec::new();
+    for i in 1..file_data.elevations.len() {
+        let dist_diff = file_data.distances[i] - file_data.distances[i-1];
+        if dist_diff > 0.0 {
+            let gradient = (file_data.elevations[i] - file_data.elevations[i-1]) / dist_diff * 100.0;
+            gradients.push((i, gradient));
+        }
+    }
+    
+    if gradients.len() > 4 {
+        let mut sorted_grads: Vec<f64> = gradients.iter().map(|(_, g)| *g).collect();
+        sorted_grads.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        
+        let q1 = sorted_grads[sorted_grads.len() / 4];
+        let q3 = sorted_grads[(sorted_grads.len() * 3) / 4];
+        let iqr = q3 - q1;
+        
+        let lower_bound = q1 - gradient_multiplier * iqr;
+        let upper_bound = q3 + gradient_multiplier * iqr;
+        
+        for (idx, gradient) in gradients {
+            if gradient < lower_bound || gradient > upper_bound {
+                // Smooth more aggressively
+                if idx > 1 && idx < cleaned_data.elevations.len() - 1 {
+                    cleaned_data.elevations[idx] = 
+                        (cleaned_data.elevations[idx-1] + cleaned_data.elevations[idx+1]) / 2.0;
+                }
+            }
+        }
+    }
+    
+    // Apply rate-based cleaning with tighter bounds
+    let mut gain_rates = Vec::new();
+    for i in 1..cleaned_data.elevations.len() {
+        let elev_change = cleaned_data.elevations[i] - cleaned_data.elevations[i-1];
+        let time_change = cleaned_data.timestamps[i] - cleaned_data.timestamps[i-1];
+        
+        if time_change > 0.0 && elev_change > 0.0 {
+            let rate = (elev_change / time_change) * 3600.0;
+            gain_rates.push((i, rate));
+        }
+    }
+    
+    if gain_rates.len() > 4 {
+        let mut sorted_rates: Vec<f64> = gain_rates.iter().map(|(_, r)| *r).collect();
+        sorted_rates.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        
+        let q1 = sorted_rates[sorted_rates.len() / 4];
+        let q3 = sorted_rates[(sorted_rates.len() * 3) / 4];
+        let iqr = q3 - q1;
+        let upper_bound = q3 + rate_multiplier * iqr;
+        
+        for (idx, rate) in gain_rates {
+            if rate > upper_bound {
+                let time_change = cleaned_data.timestamps[idx] - cleaned_data.timestamps[idx-1];
+                let max_change = (upper_bound / 3600.0) * time_change;
+                cleaned_data.elevations[idx] = cleaned_data.elevations[idx-1] + max_change;
+            }
+        }
+    }
+    
+    cleaned_data
+}
+
+fn apply_adaptive_two_stage(file_data: &GpxFileData, params: &EnhancementParams) -> GpxFileData {
+    let mut cleaned_data = file_data.clone();
+    
+    // Calculate terrain type
+    let total_distance_km = file_data.distances.last().unwrap_or(&0.0) / 1000.0;
+    let (raw_gain, _) = calculate_raw_gain_loss(&file_data.elevations);
+    let gain_per_km = if total_distance_km > 0.0 { raw_gain as f64 / total_distance_km } else { 0.0 };
+    
+    // Adaptive parameters based on terrain
+    let (gradient_multiplier, rate_multiplier) = if gain_per_km < 20.0 {
+        (1.5, 2.0) // Flat: tight bounds
+    } else if gain_per_km < 60.0 {
+        (2.0, 3.0) // Hilly: balanced
+    } else {
+        (2.5, 4.0) // Mountainous: permissive
+    };
+    
+    // Apply terrain-adaptive gradient cleaning
+    let mut gradients = Vec::new();
+    for i in 1..file_data.elevations.len() {
+        let dist_diff = file_data.distances[i] - file_data.distances[i-1];
+        if dist_diff > 0.0 {
+            let gradient = (file_data.elevations[i] - file_data.elevations[i-1]) / dist_diff * 100.0;
+            gradients.push((i, gradient));
+        }
+    }
+    
+    if gradients.len() > 4 {
+        let mut sorted_grads: Vec<f64> = gradients.iter().map(|(_, g)| *g).collect();
+        sorted_grads.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        
+        let q1 = sorted_grads[sorted_grads.len() / 4];
+        let q3 = sorted_grads[(sorted_grads.len() * 3) / 4];
+        let iqr = q3 - q1;
+        
+        let lower_bound = q1 - gradient_multiplier * iqr;
+        let upper_bound = q3 + gradient_multiplier * iqr;
+        
+        for (idx, gradient) in gradients {
+            if gradient < lower_bound || gradient > upper_bound {
+                if idx > 0 && idx < cleaned_data.elevations.len() - 1 {
+                    cleaned_data.elevations[idx] = 
+                        (cleaned_data.elevations[idx-1] + cleaned_data.elevations[idx+1]) / 2.0;
+                }
+            }
+        }
+    }
+    
+    // Apply terrain-adaptive rate cleaning
+    let mut gain_rates = Vec::new();
+    for i in 1..cleaned_data.elevations.len() {
+        let elev_change = cleaned_data.elevations[i] - cleaned_data.elevations[i-1];
+        let time_change = cleaned_data.timestamps[i] - cleaned_data.timestamps[i-1];
+        
+        if time_change > 0.0 && elev_change > 0.0 {
+            let rate = (elev_change / time_change) * 3600.0;
+            gain_rates.push((i, rate));
+        }
+    }
+    
+    if gain_rates.len() > 4 {
+        let mut sorted_rates: Vec<f64> = gain_rates.iter().map(|(_, r)| *r).collect();
+        sorted_rates.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        
+        let q1 = sorted_rates[sorted_rates.len() / 4];
+        let q3 = sorted_rates[(sorted_rates.len() * 3) / 4];
+        let iqr = q3 - q1;
+        let upper_bound = q3 + rate_multiplier * iqr;
+        
+        for (idx, rate) in gain_rates {
+            if rate > upper_bound {
+                let time_change = cleaned_data.timestamps[idx] - cleaned_data.timestamps[idx-1];
+                let max_change = (upper_bound / 3600.0) * time_change;
+                cleaned_data.elevations[idx] = cleaned_data.elevations[idx-1] + max_change;
+            }
+        }
+    }
+    
+    cleaned_data
+}
+
+fn apply_gradient_specific_two_stage(file_data: &GpxFileData, params: &EnhancementParams) -> GpxFileData {
+    let mut cleaned_data = file_data.clone();
+    
+    // Process climbs and descents separately
+    for i in 1..file_data.elevations.len() {
+        let elev_change = file_data.elevations[i] - file_data.elevations[i-1];
+        let dist_diff = file_data.distances[i] - file_data.distances[i-1];
+        
+        if dist_diff > 0.0 {
+            let gradient = (elev_change / dist_diff) * 100.0;
+            
+            if elev_change > 0.0 {
+                // CLIMB: Strict processing
+                if gradient > params.max_climb_gradient {
+                    // Cap climbs at 35%
+                    let max_change = params.max_climb_gradient * dist_diff / 100.0;
+                    cleaned_data.elevations[i] = cleaned_data.elevations[i-1] + max_change;
+                }
+                
+                // Check climb rate
+                let time_change = file_data.timestamps[i] - file_data.timestamps[i-1];
+                if time_change > 0.0 {
+                    let rate = (elev_change / time_change) * 3600.0;
+                    if rate > params.max_climb_rate_m_per_hour {
+                        let max_change = (params.max_climb_rate_m_per_hour / 3600.0) * time_change;
+                        cleaned_data.elevations[i] = cleaned_data.elevations[i-1] + max_change;
+                    }
+                }
+            } else if elev_change < 0.0 {
+                // DESCENT: Permissive processing
+                if gradient < -params.max_descent_gradient {
+                    // Only cap extreme descents > 60%
+                    let max_change = -params.max_descent_gradient * dist_diff / 100.0;
+                    cleaned_data.elevations[i] = cleaned_data.elevations[i-1] + max_change;
+                }
+                // No rate cap for descents
+            }
+        }
+    }
+    
+    cleaned_data
+}
+
+fn should_apply_enhancement(file_data: &GpxFileData, current_accuracy: f32) -> bool {
+    // Check if file needs enhancement
+    if current_accuracy < 90.0 || current_accuracy > 110.0 {
+        return true;
+    }
+    
+    // Check gradient variance
+    let mut gradients = Vec::new();
+    for i in 1..file_data.elevations.len() {
+        let dist_diff = file_data.distances[i] - file_data.distances[i-1];
+        if dist_diff > 0.0 {
+            let gradient = (file_data.elevations[i] - file_data.elevations[i-1]) / dist_diff * 100.0;
+            gradients.push(gradient);
+        }
+    }
+    
+    if !gradients.is_empty() {
+        let mean = gradients.iter().sum::<f64>() / gradients.len() as f64;
+        let variance = gradients.iter()
+            .map(|&g| (g - mean).powi(2))
+            .sum::<f64>() / gradients.len() as f64;
+        
+        if variance > 150.0 {
+            return true;
+        }
+    }
+    
+    // Check max climb rate
+    for i in 1..file_data.elevations.len() {
+        let elev_change = file_data.elevations[i] - file_data.elevations[i-1];
+        let time_change = file_data.timestamps[i] - file_data.timestamps[i-1];
+        
+        if time_change > 0.0 && elev_change > 0.0 {
+            let rate = (elev_change / time_change) * 3600.0;
+            if rate > 1200.0 {
+                return true;
+            }
+        }
+    }
+    
+    false
+}
+
+fn calculate_current_accuracy(file_data: &GpxFileData) -> f32 {
+    if file_data.official_gain == 0 {
+        return 100.0;
+    }
+    
+    let (gain, _) = calculate_raw_gain_loss(&file_data.elevations);
+    (gain as f32 / file_data.official_gain as f32) * 100.0
+}
+
+fn apply_confidence_weighted_outlier_removal(file_data: &GpxFileData, params: &EnhancementParams) -> GpxFileData {
+    let mut cleaned_data = file_data.clone();
+    
+    // Calculate confidence scores for each point
+    let mut confidences = vec![1.0; file_data.elevations.len()];
+    
+    // Factor 1: Distance from gradient IQR bounds
+    let mut gradients = Vec::new();
+    for i in 1..file_data.elevations.len() {
+        let dist_diff = file_data.distances[i] - file_data.distances[i-1];
+        if dist_diff > 0.0 {
+            let gradient = (file_data.elevations[i] - file_data.elevations[i-1]) / dist_diff * 100.0;
+            gradients.push(gradient);
+        } else {
+            gradients.push(0.0);
+        }
+    }
+    
+    if gradients.len() > 4 {
+        let mut sorted_grads = gradients.clone();
+        sorted_grads.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        
+        let q1 = sorted_grads[sorted_grads.len() / 4];
+        let q3 = sorted_grads[(sorted_grads.len() * 3) / 4];
+        let iqr = q3 - q1;
+        
+        for i in 0..gradients.len() {
+            let distance_from_median = (gradients[i] - (q1 + q3) / 2.0).abs();
+            let normalized_distance = distance_from_median / (iqr + 1.0);
+            confidences[i] *= (1.0 - normalized_distance.min(1.0) * 0.5);
+        }
+    }
+    
+    // Factor 2: Local point density
+    for i in 0..file_data.elevations.len() {
+        let window_start = if i >= 5 { i - 5 } else { 0 };
+        let window_end = if i + 5 < file_data.elevations.len() { i + 5 } else { file_data.elevations.len() - 1 };
+        
+        if window_end > window_start {
+            let distance_span = file_data.distances[window_end] - file_data.distances[window_start];
+            let point_count = window_end - window_start + 1;
+            let avg_spacing = distance_span / point_count as f64;
+            
+            if avg_spacing > 50.0 {
+                confidences[i] *= 0.7; // Sparse data
+            } else if avg_spacing < 2.0 {
+                confidences[i] *= 0.9; // Very dense
+            }
+        }
+    }
+    
+    // Apply confidence-weighted smoothing
+    for i in 1..cleaned_data.elevations.len() - 1 {
+        let smooth_weight = (1.0 - confidences[i]) * params.confidence_smoothing_factor;
+        cleaned_data.elevations[i] = cleaned_data.elevations[i] * (1.0 - smooth_weight) +
+                                     (cleaned_data.elevations[i-1] + cleaned_data.elevations[i+1]) * 0.5 * smooth_weight;
+    }
+    
+    cleaned_data
+}
+
+fn apply_climb_descent_asymmetry(file_data: &GpxFileData, params: &EnhancementParams) -> GpxFileData {
+    let mut cleaned_data = file_data.clone();
+    
+    for i in 1..file_data.elevations.len() {
+        let elev_change = file_data.elevations[i] - file_data.elevations[i-1];
+        let dist_diff = file_data.distances[i] - file_data.distances[i-1];
+        
+        if dist_diff > 0.0 {
+            let gradient = (elev_change / dist_diff) * 100.0;
+            
+            if elev_change > 0.0 {
+                // CLIMBING: Strict limits
+                if gradient > params.max_climb_gradient {
+                    let max_change = params.max_climb_gradient * dist_diff / 100.0;
+                    cleaned_data.elevations[i] = cleaned_data.elevations[i-1] + max_change;
+                }
+                
+                // Check if climb is sustained (not a spike)
+                if i > 1 && i < file_data.elevations.len() - 1 {
+                    let prev_change = file_data.elevations[i-1] - file_data.elevations[i-2];
+                    let next_change = file_data.elevations[i+1] - file_data.elevations[i];
+                    
+                    if prev_change <= 0.0 && next_change <= 0.0 {
+                        // Single point climb spike - smooth it
+                        cleaned_data.elevations[i] = (cleaned_data.elevations[i-1] + file_data.elevations[i+1]) / 2.0;
+                    }
+                }
+            } else if elev_change < 0.0 {
+                // DESCENDING: Permissive limits
+                if gradient < -params.max_descent_gradient {
+                    let max_change = -params.max_descent_gradient * dist_diff / 100.0;
+                    cleaned_data.elevations[i] = cleaned_data.elevations[i-1] + max_change;
+                }
+                // No spike checking for descents - drop-offs are real
+            }
+        }
+    }
+    
+    cleaned_data
+}
+
+#[derive(Debug, Clone, Copy)]
+enum GradientPattern {
+    SustainedClimb,
+    Switchback,
+    TechnicalDescent,
+    RollingTerrain,
+    Noise,
+}
+
+fn analyze_gradient_pattern(gradients: &[f64]) -> GradientPattern {
+    if gradients.len() < 5 {
+        return GradientPattern::Noise;
+    }
+    
+    let all_positive = gradients.iter().all(|&g| g > 2.0);
+    let all_negative = gradients.iter().all(|&g| g < -2.0);
+    let alternating = gradients.windows(2)
+        .filter(|w| (w[0] > 0.0 && w[1] < 0.0) || (w[0] < 0.0 && w[1] > 0.0))
+        .count() >= 2;
+    
+    if all_positive {
+        GradientPattern::SustainedClimb
+    } else if all_negative {
+        GradientPattern::TechnicalDescent
+    } else if alternating && gradients.iter().any(|&g| g.abs() > 15.0) {
+        GradientPattern::Switchback
+    } else if alternating {
+        GradientPattern::RollingTerrain
+    } else {
+        GradientPattern::Noise
+    }
+}
+
+fn apply_local_gradient_validation(file_data: &GpxFileData, _params: &EnhancementParams) -> GpxFileData {
+    let mut cleaned_data = file_data.clone();
+    
+    // Calculate gradients
+    let mut gradients = vec![0.0];
+    for i in 1..file_data.elevations.len() {
+        let dist_diff = file_data.distances[i] - file_data.distances[i-1];
+        if dist_diff > 0.0 {
+            let gradient = (file_data.elevations[i] - file_data.elevations[i-1]) / dist_diff * 100.0;
+            gradients.push(gradient);
+        } else {
+            gradients.push(0.0);
+        }
+    }
+    
+    // Analyze 5-point windows
+    for i in 2..gradients.len().saturating_sub(2) {
+        let window = &gradients[i-2..=i+2];
+        let pattern = analyze_gradient_pattern(window);
+        
+        match pattern {
+            GradientPattern::SustainedClimb => {
+                // Should have consistent gradient
+                let median = {
+                    let mut sorted = window.to_vec();
+                    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                    sorted[2]
+                };
+                
+                if (gradients[i] - median).abs() > median * 0.5 {
+                    // Smooth to median
+                    let ratio = median / gradients[i];
+                    let elev_change = (cleaned_data.elevations[i] - cleaned_data.elevations[i-1]) * ratio;
+                    cleaned_data.elevations[i] = cleaned_data.elevations[i-1] + elev_change;
+                }
+            },
+            GradientPattern::Switchback => {
+                // Preserve pattern - no smoothing
+            },
+            GradientPattern::TechnicalDescent => {
+                // Light smoothing only for extreme outliers
+                if gradients[i] < -80.0 {
+                    cleaned_data.elevations[i] = (cleaned_data.elevations[i-1] + cleaned_data.elevations[i+1]) / 2.0;
+                }
+            },
+            GradientPattern::RollingTerrain => {
+                // Smooth only extreme spikes
+                if gradients[i].abs() > 50.0 {
+                    cleaned_data.elevations[i] = (cleaned_data.elevations[i-1] + cleaned_data.elevations[i+1]) / 2.0;
+                }
+            },
+            GradientPattern::Noise => {
+                // Heavy smoothing
+                if i > 0 && i < cleaned_data.elevations.len() - 1 {
+                    cleaned_data.elevations[i] = 
+                        cleaned_data.elevations[i-1] * 0.25 +
+                        cleaned_data.elevations[i] * 0.5 +
+                        cleaned_data.elevations[i+1] * 0.25;
+                }
+            },
+        }
+    }
+    
+    cleaned_data
+}
+
+fn apply_minimum_change_filter(file_data: &GpxFileData, params: &EnhancementParams) -> GpxFileData {
+    let mut cleaned_data = file_data.clone();
+    
+    // Determine terrain type
+    let total_distance_km = file_data.distances.last().unwrap_or(&0.0) / 1000.0;
+    let (raw_gain, _) = calculate_raw_gain_loss(&file_data.elevations);
+    let gain_per_km = if total_distance_km > 0.0 { raw_gain as f64 / total_distance_km } else { 0.0 };
+    
+    let threshold = if gain_per_km < 20.0 {
+        params.min_change_flat
+    } else if gain_per_km < 60.0 {
+        params.min_change_rolling
+    } else {
+        params.min_change_mountainous
+    };
+    
+    // Apply deadband filter
+    let mut filtered_elevations = vec![file_data.elevations[0]];
+    let mut accumulated_change = 0.0;
+    let mut last_recorded_idx = 0;
+    let mut last_recorded_elev = file_data.elevations[0];
+    
+    for i in 1..file_data.elevations.len() {
+        let change = file_data.elevations[i] - last_recorded_elev;
+        accumulated_change += change;
+        
+        if accumulated_change.abs() >= threshold {
+            // Record the accumulated change
+            let segments = i - last_recorded_idx;
+            let change_per_segment = accumulated_change / segments as f64;
+            
+            // Fill in the intermediate elevations
+            for j in 1..=segments {
+                let elev = last_recorded_elev + change_per_segment * j as f64;
+                if filtered_elevations.len() < i {
+                    filtered_elevations.push(elev);
+                }
+            }
+            
+            last_recorded_elev = file_data.elevations[i];
+            last_recorded_idx = i;
+            accumulated_change = 0.0;
+        }
+    }
+    
+    // Fill any remaining elevations
+    while filtered_elevations.len() < file_data.elevations.len() {
+        filtered_elevations.push(last_recorded_elev);
+    }
+    
+    cleaned_data.elevations = filtered_elevations;
+    cleaned_data
+}
+
+fn calculate_raw_gain_loss(elevations: &[f64]) -> (u32, u32) {
+    let mut gain = 0.0;
+    let mut loss = 0.0;
+    
+    for window in elevations.windows(2) {
+        let change = window[1] - window[0];
+        if change > 0.0 {
+            gain += change;
+        } else {
+            loss += -change;
+        }
+    }
+    
+    (gain.round() as u32, loss.round() as u32)
 }
 
 fn calculate_accuracy_metrics(accuracies: &[f32]) -> (u32, u32, u32, u32, f32, f32, f32) {
@@ -1048,216 +1150,129 @@ fn calculate_accuracy_metrics(accuracies: &[f32]) -> (u32, u32, u32, u32, f32, f
 
 fn write_comprehensive_results(
     results: &[ComparativeAnalysisResult],
+    approaches: &[EnhancementCombination],
     output_path: PathBuf
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut wtr = Writer::from_path(output_path)?;
     
-    wtr.write_record(&[
-        "Interval (m)",
-        // Current
-        "Current Score", "Current 98-102%", "Current 90-110%", "Current Outside", "Current Success%",
-        // Current + Gap
-        "C+Gap Score", "C+Gap 98-102%", "C+Gap 90-110%", "C+Gap Outside", "C+Gap Success%",
-        // Current + Two-Stage
-        "C+2Stage Score", "C+2Stage 98-102%", "C+2Stage 90-110%", "C+2Stage Outside", "C+2Stage Success%",
-        // Current + Quality
-        "C+Quality Score", "C+Quality 98-102%", "C+Quality 90-110%", "C+Quality Outside", "C+Quality Success%",
-        // Current + Adaptive
-        "C+Adaptive Score", "C+Adaptive 98-102%", "C+Adaptive 90-110%", "C+Adaptive Outside", "C+Adaptive Success%",
-        // Current + All
-        "C+All Score", "C+All 98-102%", "C+All 90-110%", "C+All Outside", "C+All Success%",
-    ])?;
+    // Build header
+    let mut header = vec!["Interval (m)".to_string()];
+    for approach in approaches {
+        header.push(format!("{} Score", approach.name));
+        header.push(format!("{} 90-110%", approach.name));
+        header.push(format!("{} Gain Δ%", approach.name));
+        header.push(format!("{} Loss Δ%", approach.name));
+    }
+    wtr.write_record(&header)?;
     
-    let mut sorted_results = results.to_vec();
-    sorted_results.sort_by(|a, b| b.current_all_weighted_score.partial_cmp(&a.current_all_weighted_score).unwrap());
-    
-    for result in sorted_results {
-        let total_files = result.current_total_files as f32;
-        wtr.write_record(&[
-            format!("{:.1}", result.interval_m),
-            // Current
-            format!("{:.0}", result.current_weighted_score),
-            result.current_score_98_102.to_string(),
-            result.current_score_90_110.to_string(),
-            result.current_files_outside_80_120.to_string(),
-            format!("{:.1}", (result.current_score_90_110 as f32 / total_files) * 100.0),
-            // Current + Gap
-            format!("{:.0}", result.current_gap_weighted_score),
-            result.current_gap_score_98_102.to_string(),
-            result.current_gap_score_90_110.to_string(),
-            result.current_gap_files_outside_80_120.to_string(),
-            format!("{:.1}", (result.current_gap_score_90_110 as f32 / total_files) * 100.0),
-            // Current + Two-Stage
-            format!("{:.0}", result.current_two_stage_weighted_score),
-            result.current_two_stage_score_98_102.to_string(),
-            result.current_two_stage_score_90_110.to_string(),
-            result.current_two_stage_files_outside_80_120.to_string(),
-            format!("{:.1}", (result.current_two_stage_score_90_110 as f32 / total_files) * 100.0),
-            // Current + Quality
-            format!("{:.0}", result.current_quality_weighted_score),
-            result.current_quality_score_98_102.to_string(),
-            result.current_quality_score_90_110.to_string(),
-            result.current_quality_files_outside_80_120.to_string(),
-            format!("{:.1}", (result.current_quality_score_90_110 as f32 / total_files) * 100.0),
-            // Current + Adaptive
-            format!("{:.0}", result.current_adaptive_weighted_score),
-            result.current_adaptive_score_98_102.to_string(),
-            result.current_adaptive_score_90_110.to_string(),
-            result.current_adaptive_files_outside_80_120.to_string(),
-            format!("{:.1}", (result.current_adaptive_score_90_110 as f32 / total_files) * 100.0),
-            // Current + All
-            format!("{:.0}", result.current_all_weighted_score),
-            result.current_all_score_98_102.to_string(),
-            result.current_all_score_90_110.to_string(),
-            result.current_all_files_outside_80_120.to_string(),
-            format!("{:.1}", (result.current_all_score_90_110 as f32 / total_files) * 100.0),
-        ])?;
+    // Write data rows
+    for result in results {
+        let mut row = vec![format!("{:.1}", result.interval_m)];
+        
+        for approach_result in &result.approach_results {
+            row.push(format!("{:.0}", approach_result.weighted_score));
+            row.push(approach_result.score_90_110.to_string());
+            row.push(format!("{:+.1}", approach_result.average_gain_change_percent));
+            row.push(format!("{:+.1}", approach_result.average_loss_change_percent));
+        }
+        
+        wtr.write_record(&row)?;
     }
     
     wtr.flush()?;
     Ok(())
 }
 
-fn print_comprehensive_summary(results: &[ComparativeAnalysisResult]) {
-    println!("\n📊 COMPLEMENTARY ENHANCEMENTS ANALYSIS SUMMARY");
-    println!("==============================================");
+fn print_comprehensive_summary(results: &[ComparativeAnalysisResult], approaches: &[EnhancementCombination]) {
+    println!("\n📊 COMPREHENSIVE 26-APPROACH ANALYSIS SUMMARY");
+    println!("============================================");
     
-    // Find best interval for each approach using boxed trait objects
-    let approaches: Vec<(&str, Box<dyn Fn(&ComparativeAnalysisResult) -> f32>)> = vec![
-        ("Current", Box::new(|r| r.current_weighted_score)),
-        ("Current + Gap Detection", Box::new(|r| r.current_gap_weighted_score)),
-        ("Current + Enhanced Two-Stage", Box::new(|r| r.current_two_stage_weighted_score)),
-        ("Current + Quality Weighting", Box::new(|r| r.current_quality_weighted_score)),
-        ("Current + Adaptive Intervals", Box::new(|r| r.current_adaptive_weighted_score)),
-        ("Current + All Enhancements", Box::new(|r| r.current_all_weighted_score)),
-    ];
+    // Find best approach for each metric
+    let mut best_scores: Vec<(String, f32, f32, u32, f32, f32)> = Vec::new();
     
-    let mut best_results = Vec::new();
-    
-    for (name, score_fn) in &approaches {
-        let best = results.iter()
-            .max_by(|a, b| score_fn(a).partial_cmp(&score_fn(b)).unwrap())
-            .unwrap();
-        best_results.push((*name, best));
+    for (idx, approach) in approaches.iter().enumerate() {
+        let mut max_score = 0.0f32;
+        let mut best_interval = 0.0f32;
+        let mut best_90_110 = 0u32;
+        let mut gain_change = 0.0f32;
+        let mut loss_change = 0.0f32;
+        
+        for result in results {
+            if let Some(approach_result) = result.approach_results.get(idx) {
+                if approach_result.weighted_score > max_score {
+                    max_score = approach_result.weighted_score;
+                    best_interval = result.interval_m;
+                    best_90_110 = approach_result.score_90_110;
+                    gain_change = approach_result.average_gain_change_percent;
+                    loss_change = approach_result.average_loss_change_percent;
+                }
+            }
+        }
+        
+        best_scores.push((approach.name.clone(), best_interval, max_score, best_90_110, gain_change, loss_change));
     }
     
-    println!("\n🏆 OPTIMAL INTERVALS BY APPROACH:");
-    println!("Approach                       | Interval | Score  | 98-102% | 90-110% | Outside | Success Rate");
-    println!("-------------------------------|----------|--------|---------|---------|---------|-------------");
+    // Sort by score
+    best_scores.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap());
     
-    for (name, result) in &best_results {
-        let (score, s98, s90, outside, total) = match *name {
-            "Current" => (result.current_weighted_score, result.current_score_98_102, 
-                         result.current_score_90_110, result.current_files_outside_80_120,
-                         result.current_total_files),
-            "Current + Gap Detection" => (result.current_gap_weighted_score, result.current_gap_score_98_102,
-                                         result.current_gap_score_90_110, result.current_gap_files_outside_80_120,
-                                         result.current_total_files),
-            "Current + Enhanced Two-Stage" => (result.current_two_stage_weighted_score, result.current_two_stage_score_98_102,
-                                              result.current_two_stage_score_90_110, result.current_two_stage_files_outside_80_120,
-                                              result.current_total_files),
-            "Current + Quality Weighting" => (result.current_quality_weighted_score, result.current_quality_score_98_102,
-                                             result.current_quality_score_90_110, result.current_quality_files_outside_80_120,
-                                             result.current_total_files),
-            "Current + Adaptive Intervals" => (result.current_adaptive_weighted_score, result.current_adaptive_score_98_102,
-                                              result.current_adaptive_score_90_110, result.current_adaptive_files_outside_80_120,
-                                              result.current_total_files),
-            "Current + All Enhancements" => (result.current_all_weighted_score, result.current_all_score_98_102,
-                                            result.current_all_score_90_110, result.current_all_files_outside_80_120,
-                                            result.current_total_files),
-            _ => (0.0, 0, 0, 0, 1),
-        };
-        
-        let success_rate = (s90 as f32 / total as f32) * 100.0;
-        
-        println!("{:30} | {:7.1}m | {:6.0} | {:7} | {:7} | {:7} | {:10.1}%",
-                 name, result.interval_m, score, s98, s90, outside, success_rate);
+    println!("\n🏆 TOP 10 APPROACHES:");
+    println!("Rank | Approach                              | Interval | Score | 90-110% | Success% | Gain Δ% | Loss Δ%");
+    println!("-----|---------------------------------------|----------|-------|---------|----------|---------|--------");
+    
+    let total_files = results[0].approach_results[0].total_files as f32;
+    
+    for (rank, (name, interval, score, count_90_110, gain_change, loss_change)) in best_scores.iter().take(10).enumerate() {
+        let success_rate = (*count_90_110 as f32 / total_files) * 100.0;
+        println!("{:4} | {:37} | {:7.1}m | {:5.0} | {:7} | {:7.1}% | {:+6.1}% | {:+6.1}%",
+                 rank + 1, name, interval, score, count_90_110, success_rate, gain_change, loss_change);
     }
     
-    // Compare improvements
-    let current_best = best_results[0].1;
-    let best_enhanced = best_results.iter()
-        .skip(1)
-        .max_by(|a, b| {
-            let score_a = match a.0 {
-                "Current + Gap Detection" => a.1.current_gap_weighted_score,
-                "Current + Enhanced Two-Stage" => a.1.current_two_stage_weighted_score,
-                "Current + Quality Weighting" => a.1.current_quality_weighted_score,
-                "Current + Adaptive Intervals" => a.1.current_adaptive_weighted_score,
-                "Current + All Enhancements" => a.1.current_all_weighted_score,
-                _ => 0.0,
-            };
-            let score_b = match b.0 {
-                "Current + Gap Detection" => b.1.current_gap_weighted_score,
-                "Current + Enhanced Two-Stage" => b.1.current_two_stage_weighted_score,
-                "Current + Quality Weighting" => b.1.current_quality_weighted_score,
-                "Current + Adaptive Intervals" => b.1.current_adaptive_weighted_score,
-                "Current + All Enhancements" => b.1.current_all_weighted_score,
-                _ => 0.0,
-            };
-            score_a.partial_cmp(&score_b).unwrap()
-        })
-        .unwrap();
+    // Analysis of gain vs loss impact
+    println!("\n📈 ELEVATION GAIN vs LOSS IMPACT:");
+    println!("Current approach changes both gain and loss by similar amounts.");
     
-    let current_success = (current_best.current_score_90_110 as f32 / current_best.current_total_files as f32) * 100.0;
+    let asymmetric_approaches: Vec<_> = best_scores.iter()
+        .filter(|(name, _, _, _, gain, loss)| (gain - loss).abs() > 2.0)
+        .take(5)
+        .collect();
     
-    let (best_enhanced_success, best_enhanced_name) = match best_enhanced.0 {
-        "Current + Gap Detection" => (
-            (best_enhanced.1.current_gap_score_90_110 as f32 / current_best.current_total_files as f32) * 100.0,
-            "Current + Gap Detection"
-        ),
-        "Current + Enhanced Two-Stage" => (
-            (best_enhanced.1.current_two_stage_score_90_110 as f32 / current_best.current_total_files as f32) * 100.0,
-            "Current + Enhanced Two-Stage"
-        ),
-        "Current + Quality Weighting" => (
-            (best_enhanced.1.current_quality_score_90_110 as f32 / current_best.current_total_files as f32) * 100.0,
-            "Current + Quality Weighting"
-        ),
-        "Current + Adaptive Intervals" => (
-            (best_enhanced.1.current_adaptive_score_90_110 as f32 / current_best.current_total_files as f32) * 100.0,
-            "Current + Adaptive Intervals"
-        ),
-        "Current + All Enhancements" => (
-            (best_enhanced.1.current_all_score_90_110 as f32 / current_best.current_total_files as f32) * 100.0,
-            "Current + All Enhancements"
-        ),
-        _ => (0.0, "Unknown"),
-    };
-    
-    println!("\n🎯 OVERALL IMPROVEMENT:");
-    println!("Current approach:    {:.1}% success rate", current_success);
-    println!("Best enhancement ({}): {:.1}% success rate ({:+.1}% improvement)", 
-             best_enhanced_name, best_enhanced_success, best_enhanced_success - current_success);
-    
-    // Show improvements for each enhancement
-    println!("\n📈 ENHANCEMENT CONTRIBUTIONS:");
-    let improvements = vec![
-        ("Gap Detection", best_results[1].1.current_gap_score_90_110 as i32 - current_best.current_score_90_110 as i32),
-        ("Enhanced Two-Stage", best_results[2].1.current_two_stage_score_90_110 as i32 - current_best.current_score_90_110 as i32),
-        ("Quality Weighting", best_results[3].1.current_quality_score_90_110 as i32 - current_best.current_score_90_110 as i32),
-        ("Adaptive Intervals", best_results[4].1.current_adaptive_score_90_110 as i32 - current_best.current_score_90_110 as i32),
-        ("All Enhancements", best_results[5].1.current_all_score_90_110 as i32 - current_best.current_score_90_110 as i32),
-    ];
-    
-    for (name, improvement) in improvements {
-        if improvement >= 0 {
-            println!("  + {} : {:+} files moved into 90-110% band", name, improvement);
-        } else {
-            println!("  - {} : {} files moved out of 90-110% band", name, -improvement);
+    if !asymmetric_approaches.is_empty() {
+        println!("\nApproaches with asymmetric impact (different effect on gain vs loss):");
+        for (name, _, _, _, gain, loss) in asymmetric_approaches {
+            println!("- {}: Gain {:+.1}%, Loss {:+.1}% (Δ {:.1}%)", 
+                     name, gain, loss, (gain - loss).abs());
         }
     }
     
-    // Recommendations
-    println!("\n💡 RECOMMENDATIONS:");
-    if best_enhanced_success > current_success + 2.0 {
-        println!("✅ The {} approach shows significant improvement!", best_enhanced_name);
-        println!("   Consider adopting this as your new standard approach.");
-    } else if best_enhanced_success > current_success {
-        println!("📊 Modest improvements found. The {} approach is slightly better.", best_enhanced_name);
-        println!("   May be worth implementing for critical applications.");
-    } else {
-        println!("⚠️  No enhancements improved upon the current approach.");
-        println!("   The current method is already well-optimized for your data.");
+    // Find approach that minimizes elevation change while maintaining accuracy
+    let minimal_change_approaches: Vec<_> = best_scores.iter()
+        .filter(|(_, _, score, _, gain, loss)| *score > 800.0 && gain.abs() < 5.0 && loss.abs() < 5.0)
+        .take(3)
+        .collect();
+    
+    if !minimal_change_approaches.is_empty() {
+        println!("\n✨ MINIMAL CHANGE APPROACHES (high accuracy, low modification):");
+        for (name, interval, score, _, gain, loss) in minimal_change_approaches {
+            println!("- {} at {:.1}m: Score {:.0}, Changes: Gain {:+.1}%, Loss {:+.1}%", 
+                     name, interval, score, gain, loss);
+        }
+    }
+    
+    // Overall recommendation
+    let best = &best_scores[0];
+    println!("\n🎯 RECOMMENDATION:");
+    println!("Use '{}' with {:.1}m intervals", best.0, best.1);
+    println!("- Achieves {:.1}% success rate ({} of {} files within 90-110%)", 
+             (best.3 as f32 / total_files) * 100.0, best.3, total_files as u32);
+    println!("- Modifies elevation gain by {:+.1}% and loss by {:+.1}%", best.4, best.5);
+    
+    if best.0.contains("Two-Stage") {
+        println!("- The two-stage outlier removal provides marginal improvement over the base approach");
+    }
+    if best.0.contains("Adaptive") {
+        println!("- Terrain-adaptive parameters help handle diverse route types");
+    }
+    if best.0.contains("Min-Change") {
+        println!("- Minimum change filtering reduces GPS noise effectively");
     }
 }
