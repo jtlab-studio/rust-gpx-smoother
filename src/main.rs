@@ -15,11 +15,12 @@ mod custom_smoother;
 mod improved_scoring;
 mod outlier_analysis;
 mod enhanced_analysis;
+mod simplified_analysis;
 
 use custom_smoother::{ElevationData, SmoothingVariant};
 use improved_scoring::run_improved_scoring_analysis;
 use outlier_analysis::run_outlier_analysis;
-use enhanced_analysis::run_enhanced_comparative_analysis;
+use simplified_analysis::run_simplified_analysis;
 
 #[derive(Debug, Deserialize)]
 struct OfficialElevationRecord {
@@ -208,10 +209,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         eprintln!("Error in outlier analysis: {}", e);
     }
     
-    // Run enhanced comparative analysis
-    println!("\n🔄 Running enhanced comparative analysis...");
-    if let Err(e) = run_enhanced_comparative_analysis(gpx_folder) {
-        eprintln!("Error in enhanced analysis: {}", e);
+    // Run simplified analysis
+    println!("\n🔄 Running simplified DistBased vs TwoStage analysis...");
+    if let Err(e) = run_simplified_analysis(gpx_folder) {
+        eprintln!("Error in simplified analysis: {}", e);
     }
     
     Ok(())
