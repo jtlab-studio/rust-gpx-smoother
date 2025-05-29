@@ -14,10 +14,12 @@ use std::collections::HashMap;
 mod custom_smoother;
 mod improved_scoring;
 mod outlier_analysis;
+mod enhanced_analysis;
 
 use custom_smoother::{ElevationData, SmoothingVariant};
 use improved_scoring::run_improved_scoring_analysis;
 use outlier_analysis::run_outlier_analysis;
+use enhanced_analysis::run_enhanced_comparative_analysis;
 
 #[derive(Debug, Deserialize)]
 struct OfficialElevationRecord {
@@ -54,7 +56,7 @@ struct FineGrainedResult {
 }
 
 // Load official elevation data from CSV
-fn load_official_elevation_data() -> Result<HashMap<String, u32>, Box<dyn std::error::Error>> {
+pub fn load_official_elevation_data() -> Result<HashMap<String, u32>, Box<dyn std::error::Error>> {
     let mut official_data = HashMap::new();
     
     // Try to load from src folder first, then from current directory
@@ -204,6 +206,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n🔄 Running outlier analysis...");
     if let Err(e) = run_outlier_analysis(gpx_folder) {
         eprintln!("Error in outlier analysis: {}", e);
+    }
+    
+    // Run enhanced comparative analysis
+    println!("\n🔄 Running enhanced comparative analysis...");
+    if let Err(e) = run_enhanced_comparative_analysis(gpx_folder) {
+        eprintln!("Error in enhanced analysis: {}", e);
     }
     
     Ok(())
