@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use csv::Writer;
 use serde::Serialize;
 use rayon::prelude::*;
+use std::sync::Arc;
 use crate::custom_smoother::{ElevationData, SmoothingVariant};
 
 #[derive(Debug, Clone)]
@@ -65,7 +66,10 @@ pub fn run_enhanced_comparative_analysis(gpx_folder: &str) -> Result<(), Box<dyn
     }
     
     // Load GPX files and their data
+    println!("\n📂 Loading GPX files...");
+    let start = std::time::Instant::now();
     let (gpx_files_data, valid_files) = load_gpx_data(gpx_folder)?;
+    println!("✅ Loaded {} files in {:.2}s", valid_files.len(), start.elapsed().as_secs_f64());
     
     // Filter out files with 0% elevation data
     let files_with_elevation: Vec<_> = valid_files.into_iter()
@@ -87,7 +91,9 @@ pub fn run_enhanced_comparative_analysis(gpx_folder: &str) -> Result<(), Box<dyn
     println!("📊 Processing {} files with valid elevation data", files_with_elevation.len());
     
     // Process with three different approaches
-    let results = process_all_approaches(&gpx_files_data, &files_with_elevation)?;
+    let processing_start = std::time::Instant::now();
+    let results = process_all_approaches_optimized(&gpx_files_data, &files_with_elevation)?;
+    println!("✅ Processing complete in {:.2}s", processing_start.elapsed().as_secs_f64());
     
     // Write results
     write_comparative_results(&results, Path::new(gpx_folder).join("comparative_analysis_results.csv"))?;
@@ -215,41 +221,97 @@ fn load_gpx_data(gpx_folder: &str) -> Result<(HashMap<String, GpxFileData>, Vec<
     Ok((gpx_data, valid_files))
 }
 
-fn process_all_approaches(
+fn process_all_approaches_optimized(
     gpx_data: &HashMap<String, GpxFileData>,
     valid_files: &[String]
 ) -> Result<Vec<ComparativeAnalysisResult>, Box<dyn std::error::Error>> {
     // Test intervals from 0.05m to 8.0m
     let intervals: Vec<f32> = (1..=160).map(|i| i as f32 * 0.05).collect();
     
-    let results: Vec<ComparativeAnalysisResult> = intervals
+    // Create Arc for shared data
+    let gpx_data_arc = Arc::new(gpx_data.clone());
+    
+    println!("\n🚀 Processing {} intervals × {} files × 3 approaches = {} total calculations",
+             intervals.len(), valid_files.len(), intervals.len() * valid_files.len() * 3);
+    println!("⚡ Using parallel processing on {} cores", num_cpus::get());
+    
+    // Create all work items (interval, file) pairs
+    let work_items: Vec<(f32, String)> = intervals.iter()
+        .flat_map(|&interval| {
+            valid_files.iter().map(move |file| (interval, file.clone()))
+        })
+        .collect();
+    
+    println!("📊 Creating {} work items for parallel processing...", work_items.len());
+    
+    // Add progress tracking
+    let processed = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let total_items = work_items.len();
+    let start_time = std::time::Instant::now();
+    
+    // Process all work items in parallel
+    let all_results: Vec<(f32, String, f32, f32, f32)> = work_items
         .par_iter()
-        .map(|&interval| {
-            let mut baseline_accuracies = Vec::new();
-            let mut gps_quality_accuracies = Vec::new();
-            let mut combined_accuracies = Vec::new();
+        .filter_map(|(interval, filename)| {
+            let gpx_data = Arc::clone(&gpx_data_arc);
+            let processed_clone = Arc::clone(&processed);
             
-            for filename in valid_files {
-                if let Some(file_data) = gpx_data.get(filename) {
-                    if file_data.official_gain > 0 {
-                        // Approach 1: Baseline
-                        let baseline_gain = calculate_baseline_gain(file_data, interval);
-                        let baseline_accuracy = (baseline_gain as f32 / file_data.official_gain as f32) * 100.0;
-                        baseline_accuracies.push(baseline_accuracy);
-                        
-                        // Approach 2: GPS Quality-Based
-                        let gps_metrics = calculate_gps_quality_metrics(file_data);
-                        let gps_quality_gain = calculate_gps_quality_adjusted_gain(file_data, interval, &gps_metrics);
-                        let gps_quality_accuracy = (gps_quality_gain as f32 / file_data.official_gain as f32) * 100.0;
-                        gps_quality_accuracies.push(gps_quality_accuracy);
-                        
-                        // Approach 3: Combined (GPS Quality + Statistical Outlier Removal)
-                        let combined_gain = calculate_combined_approach_gain(file_data, interval, &gps_metrics);
-                        let combined_accuracy = (combined_gain as f32 / file_data.official_gain as f32) * 100.0;
-                        combined_accuracies.push(combined_accuracy);
+            if let Some(file_data) = gpx_data.get(filename) {
+                if file_data.official_gain > 0 {
+                    // Approach 1: Baseline
+                    let baseline_gain = calculate_baseline_gain(file_data, *interval);
+                    let baseline_accuracy = (baseline_gain as f32 / file_data.official_gain as f32) * 100.0;
+                    
+                    // Approach 2: GPS Quality-Based
+                    let gps_metrics = calculate_gps_quality_metrics(file_data);
+                    let gps_quality_gain = calculate_gps_quality_adjusted_gain(file_data, *interval, &gps_metrics);
+                    let gps_quality_accuracy = (gps_quality_gain as f32 / file_data.official_gain as f32) * 100.0;
+                    
+                    // Approach 3: Combined (GPS Quality + Statistical Outlier Removal)
+                    let combined_gain = calculate_combined_approach_gain(file_data, *interval, &gps_metrics);
+                    let combined_accuracy = (combined_gain as f32 / file_data.official_gain as f32) * 100.0;
+                    
+                    // Update progress
+                    let count = processed_clone.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                    if count % 1000 == 0 {
+                        let elapsed = start_time.elapsed().as_secs_f64();
+                        let rate = count as f64 / elapsed;
+                        let remaining = (total_items - count) as f64 / rate;
+                        println!("  Progress: {}/{} ({:.1}%) - {:.0} items/sec - ETA: {:.0}s",
+                                 count, total_items, 
+                                 (count as f64 / total_items as f64) * 100.0,
+                                 rate, remaining);
                     }
+                    
+                    return Some((*interval, filename.clone(), baseline_accuracy, gps_quality_accuracy, combined_accuracy));
                 }
             }
+            None
+        })
+        .collect();
+    
+    println!("✅ Parallel processing complete, aggregating results...");
+    
+    // Group results by interval
+    let mut interval_results: HashMap<i32, Vec<(f32, f32, f32)>> = HashMap::new();
+    
+    for (interval, _filename, baseline, gps_quality, combined) in all_results {
+        let key = (interval * 100.0) as i32;
+        interval_results.entry(key)
+            .or_insert_with(Vec::new)
+            .push((baseline, gps_quality, combined));
+    }
+    
+    // Convert to final results
+    let results: Vec<ComparativeAnalysisResult> = intervals
+        .iter()
+        .map(|&interval| {
+            let key = (interval * 100.0) as i32;
+            let accuracies = interval_results.get(&key).cloned().unwrap_or_default();
+            
+            let baseline_accuracies: Vec<f32> = accuracies.iter().map(|a| a.0).collect();
+            let gps_quality_accuracies: Vec<f32> = accuracies.iter().map(|a| a.1).collect();
+            let combined_accuracies: Vec<f32> = accuracies.iter().map(|a| a.2).collect();
             
             // Calculate metrics for each approach
             let baseline_metrics = calculate_accuracy_metrics(&baseline_accuracies);
