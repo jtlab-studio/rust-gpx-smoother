@@ -23,7 +23,9 @@ use outlier_analysis::run_outlier_analysis;
 struct OfficialElevationRecord {
     filename: String,
     official_elevation_gain_m: u32,
+    #[serde(default)]
     source: String,
+    #[serde(default)]
     notes: String,
 }
 
