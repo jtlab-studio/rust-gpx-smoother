@@ -15,6 +15,7 @@ mod simplified_analysis;
 mod gpx_output_analysis;
 mod butterworth_analysis;
 mod hybrid_analysis;
+mod assymetric_analysis;
 
 use custom_smoother::{ElevationData, SmoothingVariant};
 
@@ -112,10 +113,24 @@ pub fn load_official_elevation_data() -> Result<HashMap<String, u32>, Box<dyn st
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let gpx_folder = r"C:\Users\Dzhu\Documents\GPX Files";
     
-    // Run the hybrid analysis
-    println!("\n🔄 Running hybrid Butterworth + Distance-based analysis...");
-    if let Err(e) = hybrid_analysis::run_hybrid_analysis(gpx_folder) {
-        eprintln!("Error in hybrid analysis: {}", e);
+    // Print menu
+    println!("\n🏔️  GPX ELEVATION ANALYSIS SUITE");
+    println!("================================");
+    println!("Select analysis to run:");
+    println!("1. Fine-grained analysis (0.05m to 8m intervals)");
+    println!("2. Improved scoring analysis");
+    println!("3. Outlier analysis");
+    println!("4. Simplified gain/loss balance analysis");
+    println!("5. GPX output analysis (process and save files)");
+    println!("6. Butterworth filter analysis");
+    println!("7. Hybrid analysis (Butterworth + Distance-based)");
+    println!("8. Asymmetric methods analysis (comprehensive)");
+    println!("9. Run all analyses");
+    
+    // For now, run the asymmetric analysis
+    println!("\n🔬 Running comprehensive asymmetric processing analysis...");
+    if let Err(e) = assymetric_analysis::run_asymmetric_analysis(gpx_folder) {
+        eprintln!("Error in asymmetric analysis: {}", e);
     }
     
     Ok(())
