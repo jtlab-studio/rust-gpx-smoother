@@ -13,8 +13,6 @@ mod improved_scoring;
 mod outlier_analysis;
 mod simplified_analysis;
 mod gpx_output_analysis;
-mod butterworth_analysis;
-mod hybrid_analysis;
 mod assymetric_analysis;
 
 use custom_smoother::{ElevationData, SmoothingVariant};
@@ -122,10 +120,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("3. Outlier analysis");
     println!("4. Simplified gain/loss balance analysis");
     println!("5. GPX output analysis (process and save files)");
-    println!("6. Butterworth filter analysis");
-    println!("7. Hybrid analysis (Butterworth + Distance-based)");
-    println!("8. Asymmetric methods analysis (comprehensive)");
-    println!("9. Run all analyses");
+    println!("6. Asymmetric methods analysis (comprehensive)");
+    println!("7. Run all analyses");
     
     // For now, run the asymmetric analysis
     println!("\n🔬 Running comprehensive asymmetric processing analysis...");
