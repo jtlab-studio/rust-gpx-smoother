@@ -3,24 +3,18 @@ use gpx::read;
 use geo::HaversineDistance;
 use geo::point;
 use std::io::BufReader;
-use walkdir::WalkDir;
 use csv::{Writer, Reader};
 use serde::{Serialize, Deserialize};
 use rayon::prelude::*;
-use std::sync::{Arc, Mutex};
-use std::time::Instant;
 use std::collections::HashMap;
 
 mod custom_smoother;
 mod improved_scoring;
 mod outlier_analysis;
-mod enhanced_analysis;
 mod simplified_analysis;
+mod gpx_output_analysis;
 
 use custom_smoother::{ElevationData, SmoothingVariant};
-use improved_scoring::run_improved_scoring_analysis;
-use outlier_analysis::run_outlier_analysis;
-use simplified_analysis::run_simplified_analysis;
 
 #[derive(Debug, Deserialize)]
 struct OfficialElevationRecord {
@@ -114,109 +108,18 @@ pub fn load_official_elevation_data() -> Result<HashMap<String, u32>, Box<dyn st
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let start_time = Instant::now();
-    
-    // Load official elevation data
-    let official_elevation_data = load_official_elevation_data()?;
-    
-    // Set up Rayon thread pool to use all available cores
-    rayon::ThreadPoolBuilder::new()
-        .num_threads(num_cpus::get())
-        .build_global()
-        .unwrap();
-    
     let gpx_folder = r"C:\Users\Dzhu\Documents\GPX Files";
-    let output_path = Path::new(gpx_folder).join("fine_grained_analysis_0.05_to_8m.csv");
     
-    println!("\n🚀 PARALLELIZED FINE-GRAINED DISTANCE ANALYSIS");
-    println!("==============================================");
-    println!("💻 System: {} cores detected, 32GB RAM available", num_cpus::get());
-    println!("📊 Analysis range: 0.05m to 8.0m in 0.05m increments");
-    println!("📈 Total intervals to test: 160 intervals per file");
-    println!("🎯 Output: {}", output_path.display());
-    println!("==============================================\n");
-    
-    // Collect all GPX files first
-    let gpx_files: Vec<_> = WalkDir::new(gpx_folder)
-        .into_iter()
-        .filter_map(|entry| entry.ok())
-        .filter(|entry| {
-            entry.file_type().is_file() && 
-            entry.path().extension()
-                .and_then(|s| s.to_str())
-                .map(|s| s.to_lowercase() == "gpx")
-                .unwrap_or(false)
-        })
-        .map(|entry| entry.path().to_path_buf())
-        .collect();
-    
-    println!("📁 Found {} GPX files to process", gpx_files.len());
-    
-    let progress_counter = Arc::new(Mutex::new(0));
-    let total_files = gpx_files.len();
-    let official_data_arc = Arc::new(official_elevation_data);
-    
-    // Process files in parallel
-    let results: Vec<_> = gpx_files
-        .par_iter()
-        .filter_map(|path| {
-            let official_data = Arc::clone(&official_data_arc);
-            let result = process_gpx_file_fine_grained(path, &official_data);
-            
-            // Update progress
-            let mut counter = progress_counter.lock().unwrap();
-            *counter += 1;
-            let progress = *counter;
-            println!("Progress: {}/{} files completed", progress, total_files);
-            
-            match result {
-                Ok(analysis) => Some(analysis),
-                Err(e) => {
-                    eprintln!("❌ Error processing {}: {}", path.display(), e);
-                    None
-                }
-            }
-        })
-        .collect();
-    
-    if results.is_empty() {
-        println!("No GPX files processed successfully.");
-        return Ok(());
-    }
-    
-    // Write results to CSV
-    write_fine_grained_csv(&results, &output_path)?;
-    
-    let elapsed = start_time.elapsed();
-    println!("\n🎉 FINE-GRAINED ANALYSIS COMPLETE!");
-    println!("📊 Results saved to: {}", output_path.display());
-    println!("📁 Processed {} GPX files", results.len());
-    println!("⏱️  Total time: {:.2} seconds", elapsed.as_secs_f64());
-    println!("⚡ Average time per file: {:.2} seconds", elapsed.as_secs_f64() / results.len() as f64);
-    
-    // Print summary statistics
-    print_fine_grained_summary(&results);
-    
-    // Run improved scoring analysis
-    println!("\n🔄 Running improved scoring analysis...");
-    if let Err(e) = run_improved_scoring_analysis(gpx_folder) {
-        eprintln!("Error in scoring analysis: {}", e);
-    }
-    
-    // Run outlier analysis
-    println!("\n🔄 Running outlier analysis...");
-    if let Err(e) = run_outlier_analysis(gpx_folder) {
-        eprintln!("Error in outlier analysis: {}", e);
-    }
-    
-    // Run simplified analysis
-    println!("\n🔄 Running simplified DistBased vs TwoStage analysis...");
-    if let Err(e) = run_simplified_analysis(gpx_folder) {
-        eprintln!("Error in simplified analysis: {}", e);
+    // Run the GPX output analysis at 6.1m interval
+    println!("\n🔄 Running GPX output analysis at 6.1m interval...");
+    if let Err(e) = gpx_output_analysis::run_gpx_output_analysis(gpx_folder) {
+        eprintln!("Error in GPX output analysis: {}", e);
     }
     
     Ok(())
 }
+
+// Keep the original functions below for backward compatibility if needed
 
 fn process_gpx_file_fine_grained(
     path: &Path, 
