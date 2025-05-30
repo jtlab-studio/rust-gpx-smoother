@@ -14,7 +14,9 @@ mod outlier_analysis;
 mod simplified_analysis;
 mod gpx_output_analysis;
 mod assymetric_analysis;
-mod gpx_processor; // Add the new processor module
+mod hybrid_analysis;  // Add this line
+mod incline_analyzer; // Add this line
+mod gpx_processor;    // This was already there
 
 use custom_smoother::{ElevationData, SmoothingVariant};
 
@@ -133,7 +135,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("5. 🏆 PROCESS & SAVE GPX FILES (using winning thresholds) [RECOMMENDED]");
     println!("6. Previous asymmetric methods analysis (comprehensive)");
     println!("7. Fine-tuned asymmetric directional deadzone optimization");
-    println!("8. Ultra-comprehensive analysis (original broad search)");
+    println!("8. Hybrid analysis (Butterworth + Distance-based)");
     println!("9. Run all analyses");
     
     // Auto-run the GPX processor with winning thresholds
@@ -205,7 +207,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("2. Improved scoring analysis"); 
     println!("3. Outlier detection analysis");
     println!("4. Fine-tuned asymmetric analysis");
-    println!("5. All supplementary analyses");
+    println!("5. Hybrid analysis (Butterworth + Distance-based)");
+    println!("6. All supplementary analyses");
     
     // Simple menu handling
     use std::io::{self, Write};
@@ -234,11 +237,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             assymetric_analysis::run_fine_tuned_asymmetric_analysis(gpx_folder)?;
         },
         "5" => {
+            println!("\n🔄 Running hybrid analysis...");
+            hybrid_analysis::run_hybrid_analysis(gpx_folder)?;
+        },
+        "6" => {
             println!("\n🚀 Running all supplementary analyses...");
             run_fine_grained_analysis(gpx_folder)?;
             improved_scoring::run_improved_scoring_analysis(gpx_folder)?;
             outlier_analysis::run_outlier_analysis(gpx_folder)?;
             assymetric_analysis::run_fine_tuned_asymmetric_analysis(gpx_folder)?;
+            hybrid_analysis::run_hybrid_analysis(gpx_folder)?;
             println!("✅ All supplementary analyses complete!");
         },
         "" => {
