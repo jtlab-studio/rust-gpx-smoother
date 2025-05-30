@@ -103,113 +103,38 @@ struct CrossValidationResult {
 }
 
 pub fn run_asymmetric_analysis(gpx_folder: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let total_start = std::time::Instant::now();
+    println!("Starting comprehensive asymmetric analysis...");
     
-    println!("\n🔬 COMPREHENSIVE ASYMMETRIC & ALTERNATIVE PROCESSING ANALYSIS");
-    println!("============================================================");
-    println!("Testing methods to preserve elevation loss while maintaining gain accuracy");
-    
-    // Load GPX data
-    println!("📂 Loading GPX files...");
-    let start = std::time::Instant::now();
     let (gpx_files_data, valid_files) = load_gpx_data(gpx_folder)?;
-    println!("✅ Loaded {} files in {:.2}s", valid_files.len(), start.elapsed().as_secs_f64());
     
-    // Filter files with elevation data and official data
     let files_with_elevation: Vec<_> = valid_files.into_iter()
         .filter(|file| {
             if let Some(data) = gpx_files_data.get(file) {
                 let has_elevation = data.elevations.iter()
                     .any(|&e| (e - data.elevations[0]).abs() > 0.1);
-                has_elevation && data.official_gain > 0 // Only files with official data
+                has_elevation && data.official_gain > 0
             } else {
                 false
             }
         })
         .collect();
     
-    println!("📊 Processing {} files with valid elevation data and official benchmarks", files_with_elevation.len());
-    
     if files_with_elevation.is_empty() {
         return Err("No files with both elevation data and official benchmarks found!".into());
     }
     
-    // Generate focused test configurations
-    let test_configs = generate_focused_test_configs();
-    println!("🔍 Testing {} parameter combinations\n", test_configs.len());
+    let test_configs = generate_comprehensive_test_configs();
     
-    // Start processing
-    println!("🚀 Starting asymmetric analysis...");
-    let processing_start = std::time::Instant::now();
+    println!("Processing {} methods across {} files...", test_configs.len(), files_with_elevation.len());
     let all_results = process_all_methods(&gpx_files_data, &files_with_elevation, &test_configs)?;
-    println!("✅ Analysis complete in {:.1} minutes", processing_start.elapsed().as_secs_f64() / 60.0);
+    println!("Analysis complete.");
     
-    // Write results immediately
     let output_path = Path::new(gpx_folder).join("asymmetric_analysis_results.csv");
     write_results_simple(&all_results, &output_path)?;
     
-    // Print simple summary
-    print_simple_summary(&all_results);
-    
-    let total_time = total_start.elapsed();
-    println!("\n⏱️  TOTAL EXECUTION TIME: {:.1} minutes", 
-             total_time.as_secs_f64() / 60.0);
+    print_comprehensive_summary(&all_results);
     
     Ok(())
-}
-
-fn generate_focused_test_configs() -> Vec<(ProcessingMethod, Vec<f64>)> {
-    let mut configs = Vec::new();
-    
-    // 1. Standard Distance-Based (key intervals only)
-    let standard_intervals = [1.0, 1.5, 2.0, 2.275, 2.5, 3.0, 4.0, 5.0, 6.0];
-    for &interval in &standard_intervals {
-        configs.push((ProcessingMethod::Standard, vec![interval]));
-    }
-    
-    // 2. Asymmetric Intervals (most promising combinations)
-    let asymmetric_combinations = [
-        (1.0, 2.0), (1.0, 4.0), (1.0, 6.0), (1.0, 8.0),
-        (1.5, 3.0), (1.5, 5.0), (1.5, 8.0),
-        (2.0, 4.0), (2.0, 6.0), (2.0, 8.0),
-        (2.275, 4.0), (2.275, 6.0), (2.275, 8.0),
-        (2.5, 5.0), (2.5, 8.0),
-        (3.0, 6.0), (3.0, 10.0),
-    ];
-    for &(gain, loss) in &asymmetric_combinations {
-        configs.push((ProcessingMethod::AsymmetricInterval, vec![gain, loss]));
-    }
-    
-    // 3. Directional Deadzone (key combinations)
-    let deadzone_combinations = [
-        (0.1, 0.01), (0.2, 0.05), (0.3, 0.1), (0.5, 0.2), (1.0, 0.2)
-    ];
-    for &(gain_th, loss_th) in &deadzone_combinations {
-        configs.push((ProcessingMethod::DirectionalDeadzone, vec![gain_th, loss_th]));
-    }
-    
-    // 4. Loss Compensation (promising factors)
-    let loss_comp_combinations = [
-        (2.0, 1.4), (2.0, 1.6), (2.0, 1.8),
-        (2.275, 1.4), (2.275, 1.6), (2.275, 1.8),
-        (2.5, 1.4), (2.5, 1.6),
-        (3.0, 1.5), (4.0, 1.5),
-    ];
-    for &(interval, factor) in &loss_comp_combinations {
-        configs.push((ProcessingMethod::LossCompensation, vec![interval, factor]));
-    }
-    
-    // 5. Two-Pass (key combinations)
-    let two_pass_combinations = [
-        (2.0, 0.1), (2.0, 0.5), (2.0, 1.0),
-        (2.275, 0.1), (2.275, 0.5), (2.275, 1.0),
-        (3.0, 0.5), (3.0, 1.0),
-    ];
-    for &(gain_int, loss_int) in &two_pass_combinations {
-        configs.push((ProcessingMethod::TwoPass, vec![gain_int, loss_int]));
-    }
-    
-    configs
 }
 
 fn generate_comprehensive_test_configs() -> Vec<(ProcessingMethod, Vec<f64>)> {
@@ -224,7 +149,7 @@ fn generate_comprehensive_test_configs() -> Vec<(ProcessingMethod, Vec<f64>)> {
         configs.push((ProcessingMethod::Standard, vec![interval]));
     }
     
-    // 2. Asymmetric Intervals (35 tests) - Extended loss intervals to 12m
+    // 2. Asymmetric Intervals (39 tests) - Extended loss intervals to 12m
     let asymmetric_combinations = [
         // Small gain intervals with varied loss
         (1.0, 2.0), (1.0, 3.0), (1.0, 4.0), (1.0, 6.0), (1.0, 8.0), (1.0, 10.0),
@@ -254,7 +179,7 @@ fn generate_comprehensive_test_configs() -> Vec<(ProcessingMethod, Vec<f64>)> {
         configs.push((ProcessingMethod::DirectionalDeadzone, vec![gain_th, loss_th]));
     }
     
-    // 4. Loss Compensation (30 tests) - Extended base intervals to 6.5m
+    // 4. Loss Compensation (29 tests) - Extended base intervals to 6.5m
     let loss_comp_combinations = [
         (1.5, 1.2), (1.5, 1.5), (1.5, 1.8),
         (2.0, 1.2), (2.0, 1.4), (2.0, 1.6), (2.0, 1.8), (2.0, 2.0),
@@ -312,15 +237,6 @@ fn generate_comprehensive_test_configs() -> Vec<(ProcessingMethod, Vec<f64>)> {
     for &(interval, variance_th) in &hybrid_combinations {
         configs.push((ProcessingMethod::HybridSelective, vec![interval, variance_th]));
     }
-    
-    println!("📊 Extended test configuration breakdown:");
-    println!("  • Standard Distance-Based: {} tests (up to 6.5m)", standard_intervals.len());
-    println!("  • Asymmetric Intervals: {} tests (up to 12m loss)", asymmetric_combinations.len());
-    println!("  • Directional Deadzone: {} tests", deadzone_combinations.len());
-    println!("  • Loss Compensation: {} tests (up to 6.5m)", loss_comp_combinations.len());
-    println!("  • Gradient-Based: {} tests (up to 6.5m)", gradient_combinations.len());
-    println!("  • Two-Pass: {} tests (up to 6.5m)", two_pass_combinations.len());
-    println!("  • Hybrid Selective: {} tests (up to 6.5m)", hybrid_combinations.len());
     
     configs
 }
@@ -425,46 +341,18 @@ fn load_gpx_data(gpx_folder: &str) -> Result<(HashMap<String, GpxFileData>, Vec<
     Ok((gpx_data, valid_files))
 }
 
-fn print_terrain_distribution(gpx_data: &HashMap<String, GpxFileData>) {
-    let mut flat_count = 0;
-    let mut rolling_count = 0;
-    let mut hilly_count = 0;
-    let mut mountain_count = 0;
-    
-    for (_, data) in gpx_data {
-        match data.terrain_type {
-            TerrainType::Flat => flat_count += 1,
-            TerrainType::Rolling => rolling_count += 1,
-            TerrainType::Hilly => hilly_count += 1,
-            TerrainType::Mountainous => mountain_count += 1,
-        }
-    }
-    
-    println!("\n🏔️  Terrain Distribution:");
-    println!("  Flat (<20m/km): {} files", flat_count);
-    println!("  Rolling (20-40m/km): {} files", rolling_count);
-    println!("  Hilly (40-60m/km): {} files", hilly_count);
-    println!("  Mountainous (>60m/km): {} files", mountain_count);
-}
-
 fn process_all_methods(
     gpx_data: &HashMap<String, GpxFileData>,
     valid_files: &[String],
     test_configs: &[(ProcessingMethod, Vec<f64>)]
 ) -> Result<Vec<MethodResult>, Box<dyn std::error::Error>> {
     let gpx_data_arc = Arc::new(gpx_data.clone());
-    let total_configs = test_configs.len();
-    let total_files = valid_files.len();
-    let total_operations = total_configs * total_files;
-    
-    println!("\n🚀 Processing {} methods × {} files = {} total operations", 
-             total_configs, total_files, total_operations);
-    println!("⚡ Using parallel processing on {} cores", num_cpus::get());
-    
     let mut all_results = Vec::new();
     
-    // Process all methods silently with minimal output
     for (method, params) in test_configs.iter() {
+        let method_name = format!("{:?}", method);
+        println!("Starting {} processing...", method_name);
+        
         let file_results: Vec<ProcessingResult> = valid_files
             .par_iter()
             .filter_map(|filename| {
@@ -483,6 +371,8 @@ fn process_all_methods(
             let method_result = create_method_result(*method, params, &file_results);
             all_results.push(method_result);
         }
+        
+        println!("{} processing complete.", method_name);
     }
     
     Ok(all_results)
@@ -519,7 +409,6 @@ fn process_single_file(
             process_hybrid_selective(file_data, params[0], params[1])
         },
         _ => {
-            // Default to standard processing for other methods
             process_standard(file_data, params.get(0).copied().unwrap_or(2.275))
         }
     };
@@ -565,7 +454,6 @@ fn process_asymmetric_interval(
     gain_interval: f64, 
     loss_interval: f64
 ) -> (f64, f64) {
-    // Identify ascending and descending segments
     let mut segments = Vec::new();
     let mut current_start = 0;
     let mut is_ascending = true;
@@ -583,7 +471,6 @@ fn process_asymmetric_interval(
     let mut total_gain = 0.0;
     let mut total_loss = 0.0;
     
-    // Process each segment with appropriate interval
     for (start, end, ascending) in segments {
         if end <= start {
             continue;
@@ -592,7 +479,6 @@ fn process_asymmetric_interval(
         let segment_elevations = file_data.elevations[start..=end].to_vec();
         let segment_distances = file_data.distances[start..=end].to_vec();
         
-        // Normalize distances to start at 0
         let base_distance = segment_distances[0];
         let normalized_distances: Vec<f64> = segment_distances.iter()
             .map(|d| d - base_distance)
@@ -620,7 +506,6 @@ fn process_directional_deadzone(
     gain_threshold: f64,
     loss_threshold: f64
 ) -> (f64, f64) {
-    // First apply standard smoothing
     let mut elevation_data = ElevationData::new_with_variant(
         file_data.elevations.clone(),
         file_data.distances.clone(),
@@ -630,7 +515,6 @@ fn process_directional_deadzone(
     elevation_data.apply_custom_interval_processing(2.275);
     let smoothed_elevations = elevation_data.enhanced_altitude.clone();
     
-    // Apply directional deadzone
     let mut gain = 0.0;
     let mut loss = 0.0;
     
@@ -654,7 +538,6 @@ fn process_gradient_based(
 ) -> (f64, f64) {
     let mut protected_indices = Vec::new();
     
-    // Identify steep sections
     for i in 1..file_data.elevations.len() {
         let distance_diff = file_data.distances[i] - file_data.distances[i-1];
         if distance_diff > 0.0 {
@@ -667,7 +550,6 @@ fn process_gradient_based(
         }
     }
     
-    // Apply smoothing but preserve protected points
     let mut elevation_data = ElevationData::new_with_variant(
         file_data.elevations.clone(),
         file_data.distances.clone(),
@@ -677,14 +559,12 @@ fn process_gradient_based(
     elevation_data.apply_custom_interval_processing(interval);
     let mut processed_elevations = elevation_data.enhanced_altitude.clone();
     
-    // Restore protected points
     for &idx in &protected_indices {
         if idx < processed_elevations.len() {
             processed_elevations[idx] = file_data.elevations[idx];
         }
     }
     
-    // Calculate gain/loss from mixed elevations
     let mut gain = 0.0;
     let mut loss = 0.0;
     
@@ -705,7 +585,6 @@ fn process_two_pass(
     gain_interval: f64,
     loss_interval: f64
 ) -> (f64, f64) {
-    // Pass 1: Calculate gain with specified smoothing
     let gain = if gain_interval > 0.0 {
         let mut gain_data = ElevationData::new_with_variant(
             file_data.elevations.clone(),
@@ -715,12 +594,10 @@ fn process_two_pass(
         gain_data.apply_custom_interval_processing(gain_interval);
         gain_data.get_total_elevation_gain()
     } else {
-        // No smoothing for gain
         let (raw_gain, _) = calculate_raw_gain_loss(&file_data.elevations);
         raw_gain as f64
     };
     
-    // Pass 2: Calculate loss with specified smoothing
     let loss = if loss_interval > 0.0 {
         let mut loss_data = ElevationData::new_with_variant(
             file_data.elevations.clone(),
@@ -730,7 +607,6 @@ fn process_two_pass(
         loss_data.apply_custom_interval_processing(loss_interval);
         loss_data.get_total_elevation_loss()
     } else {
-        // No smoothing for loss
         let (_, raw_loss) = calculate_raw_gain_loss(&file_data.elevations);
         raw_loss as f64
     };
@@ -746,7 +622,6 @@ fn process_hybrid_selective(
     let window_size = 10;
     let mut should_smooth = vec![true; file_data.elevations.len()];
     
-    // Calculate local variance
     for i in 0..file_data.elevations.len() {
         let start = i.saturating_sub(window_size / 2);
         let end = (i + window_size / 2).min(file_data.elevations.len());
@@ -758,7 +633,6 @@ fn process_hybrid_selective(
                 .map(|&e| (e - mean).powi(2))
                 .sum::<f64>() / window.len() as f64;
             
-            // Don't smooth low-variance descending sections
             let is_descending = end > start + 1 && 
                 file_data.elevations[end-1] < file_data.elevations[start];
             
@@ -768,7 +642,6 @@ fn process_hybrid_selective(
         }
     }
     
-    // Apply selective smoothing
     let mut elevation_data = ElevationData::new_with_variant(
         file_data.elevations.clone(),
         file_data.distances.clone(),
@@ -778,17 +651,22 @@ fn process_hybrid_selective(
     elevation_data.apply_custom_interval_processing(interval);
     let smoothed = elevation_data.enhanced_altitude.clone();
     
-    // Mix smoothed and raw based on should_smooth
-    let mut final_elevations = vec![0.0; file_data.elevations.len()];
-    for i in 0..file_data.elevations.len() {
-        final_elevations[i] = if should_smooth[i] {
-            smoothed[i]
+    // Ensure we don't go out of bounds when accessing smoothed data
+    let min_len = file_data.elevations.len().min(smoothed.len());
+    let mut final_elevations = vec![0.0; min_len];
+    
+    for i in 0..min_len {
+        final_elevations[i] = if i < should_smooth.len() && should_smooth[i] {
+            if i < smoothed.len() {
+                smoothed[i]
+            } else {
+                file_data.elevations[i]
+            }
         } else {
             file_data.elevations[i]
         };
     }
     
-    // Calculate gain/loss
     let mut gain = 0.0;
     let mut loss = 0.0;
     
@@ -853,7 +731,6 @@ fn create_method_result(
     let accuracies: Vec<f32> = results.iter().map(|r| r.accuracy).collect();
     let gain_loss_ratios: Vec<f32> = results.iter().map(|r| r.gain_loss_ratio).collect();
     
-    // Calculate accuracy bands
     let score_98_102 = accuracies.iter().filter(|&&acc| acc >= 98.0 && acc <= 102.0).count() as u32;
     let score_95_105 = accuracies.iter().filter(|&&acc| acc >= 95.0 && acc <= 105.0).count() as u32;
     let score_90_110 = accuracies.iter().filter(|&&acc| acc >= 90.0 && acc <= 110.0).count() as u32;
@@ -861,7 +738,6 @@ fn create_method_result(
     let score_80_120 = accuracies.iter().filter(|&&acc| acc >= 80.0 && acc <= 120.0).count() as u32;
     let files_outside_80_120 = accuracies.iter().filter(|&&acc| acc < 80.0 || acc > 120.0).count() as u32;
     
-    // Calculate gain/loss balance metrics
     let files_balanced_85_115 = gain_loss_ratios.iter()
         .filter(|&&ratio| ratio >= 85.0 && ratio <= 115.0)
         .count() as u32;
@@ -880,7 +756,6 @@ fn create_method_result(
         sorted_ratios[sorted_ratios.len() / 2]
     };
     
-    // Scoring
     let weighted_accuracy_score = (score_98_102 as f32 * 10.0) +
                                  ((score_95_105 - score_98_102) as f32 * 6.0) +
                                  ((score_90_110 - score_95_105) as f32 * 3.0) +
@@ -893,7 +768,6 @@ fn create_method_result(
                                   ((files_balanced_70_130 - files_balanced_85_115) as f32 * 5.0) +
                                   ((median_gain_loss_ratio - 100.0).abs() * -2.0);
     
-    // Statistics
     let average_accuracy = accuracies.iter().sum::<f32>() / accuracies.len() as f32;
     let mut sorted_accuracies = accuracies.clone();
     sorted_accuracies.sort_by(|a, b| a.partial_cmp(b).unwrap());
@@ -922,7 +796,6 @@ fn create_method_result(
     
     let success_rate = (score_90_110 as f32 / total_files) * 100.0;
     
-    // Gain/loss metrics
     let avg_raw_gain = results.iter().map(|r| r.raw_gain).sum::<f32>() / total_files;
     let avg_raw_loss = results.iter().map(|r| r.raw_loss).sum::<f32>() / total_files;
     let avg_processed_gain = results.iter().map(|r| r.processed_gain).sum::<f32>() / total_files;
@@ -944,12 +817,10 @@ fn create_method_result(
     
     let loss_preservation_score = 100.0 - (loss_reduction_percent - gain_reduction_percent).abs();
     
-    // Combined score that heavily weights gain/loss balance
     let combined_score = (weighted_accuracy_score * 0.4) + 
                         (gain_loss_balance_score * 0.4) +
                         (loss_preservation_score * 0.2);
     
-    // Calculate terrain-specific scores
     let terrain_scores = calculate_terrain_specific_scores(results);
     
     MethodResult {
@@ -1029,53 +900,9 @@ fn calculate_terrain_specific_scores(results: &[ProcessingResult]) -> (f32, f32,
     (flat_score, hilly_score, mountain_score)
 }
 
-fn cross_validate_method(
-    _method: &MethodResult,
-    _gpx_data: &HashMap<String, GpxFileData>,
-    _valid_files: &[String],
-    _k_folds: usize
-) -> CrossValidationResult {
-    // Simplified cross-validation for now
-    CrossValidationResult {
-        mean_accuracy: 100.0,
-        std_accuracy: 5.0,
-        mean_gain_loss_ratio: 100.0,
-        std_gain_loss_ratio: 10.0,
-        consistency_score: 95.0,
-    }
-}
-
-fn find_pareto_optimal_solutions(results: &[MethodResult]) -> Vec<&MethodResult> {
-    let mut pareto_front = Vec::new();
-    
-    for candidate in results {
-        let mut is_dominated = false;
-        
-        for other in results {
-            // Check if 'other' dominates 'candidate' on all objectives
-            if other.median_accuracy >= candidate.median_accuracy &&
-                other.median_gain_loss_ratio >= candidate.median_gain_loss_ratio &&
-                other.loss_reduction_percent <= candidate.loss_reduction_percent &&
-                (other.median_accuracy > candidate.median_accuracy ||
-                other.median_gain_loss_ratio > candidate.median_gain_loss_ratio ||
-                other.loss_reduction_percent < candidate.loss_reduction_percent) {
-                is_dominated = true;
-                break;
-            }
-        }
-        
-        if !is_dominated {
-            pareto_front.push(candidate);
-        }
-    }
-    
-    pareto_front
-}
-
 fn write_results_simple(results: &[MethodResult], output_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let mut wtr = Writer::from_path(output_path)?;
     
-    // Write simple header
     wtr.write_record(&[
         "Method",
         "Parameters", 
@@ -1087,11 +914,9 @@ fn write_results_simple(results: &[MethodResult], output_path: &Path) -> Result<
         "Total Files",
     ])?;
     
-    // Sort by combined score
     let mut sorted_results = results.to_vec();
     sorted_results.sort_by(|a, b| b.combined_score.partial_cmp(&a.combined_score).unwrap());
     
-    // Write data
     for result in sorted_results {
         wtr.write_record(&[
             &result.method,
@@ -1106,279 +931,13 @@ fn write_results_simple(results: &[MethodResult], output_path: &Path) -> Result<
     }
     
     wtr.flush()?;
-    println!("\n✅ Results saved to: {}", output_path.display());
     Ok(())
 }
 
-fn print_simple_summary(results: &[MethodResult]) {
-    println!("\n📊 ASYMMETRIC ANALYSIS RESULTS");
-    println!("==============================");
+fn print_comprehensive_summary(results: &[MethodResult]) {
+    println!("\n📊 COMPREHENSIVE ASYMMETRIC ANALYSIS RESULTS");
+    println!("============================================");
     
-    // Find best overall
-    let best = results.iter()
-        .max_by(|a, b| a.combined_score.partial_cmp(&b.combined_score).unwrap())
-        .unwrap();
-    
-    println!("\n🏆 BEST METHOD:");
-    println!("   Method: {}", best.method);
-    println!("   Parameters: {}", best.parameters);
-    println!("   Combined Score: {:.1}", best.combined_score);
-    println!("   Median Gain/Loss Ratio: {:.1}%", best.median_gain_loss_ratio);
-    println!("   Median Accuracy: {:.1}%", best.median_accuracy);
-    println!("   Success Rate: {:.1}% ({}/{})", 
-             best.success_rate, best.score_90_110, best.total_files);
-    
-    // Show top 5
-    let mut sorted_by_score = results.to_vec();
-    sorted_by_score.sort_by(|a, b| b.combined_score.partial_cmp(&a.combined_score).unwrap());
-    
-    println!("\n🏅 TOP 5 METHODS:");
-    println!("Rank | Method                  | Score | Ratio% | Acc%  | Success%");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    
-    for (i, result) in sorted_by_score.iter().take(5).enumerate() {
-        println!("{:4} | {:23} | {:5.1} | {:6.1} | {:5.1} | {:8.1}",
-                 i + 1,
-                 result.method,
-                 result.combined_score,
-                 result.median_gain_loss_ratio,
-                 result.median_accuracy,
-                 result.success_rate);
-    }
-    
-    println!("\n🎯 RECOMMENDATION:");
-    println!("Use '{}' with parameters: {}", best.method, best.parameters);
-    println!("This provides the best balance of accuracy and loss preservation.");
-}
-    let mut wtr = Writer::from_path(output_path)?;
-    
-    // Write simple header
-    wtr.write_record(&[
-        "Method",
-        "Parameters", 
-        "Combined Score",
-        "Median Gain/Loss %",
-        "Median Accuracy %",
-        "Success Rate %",
-        "Files Balanced 85-115%",
-        "Total Files",
-    ])?;
-    
-    // Sort by combined score
-    let mut sorted_results = results.to_vec();
-    sorted_results.sort_by(|a, b| b.combined_score.partial_cmp(&a.combined_score).unwrap());
-    
-    // Write data
-    for result in sorted_results {
-        wtr.write_record(&[
-            &result.method,
-            &result.parameters,
-            &format!("{:.1}", result.combined_score),
-            &format!("{:.1}", result.median_gain_loss_ratio),
-            &format!("{:.1}", result.median_accuracy),
-            &format!("{:.1}", result.success_rate),
-            &result.files_balanced_85_115.to_string(),
-            &result.total_files.to_string(),
-        ])?;
-    }
-    
-    wtr.flush()?;
-    println!("\n✅ Results saved to: {}", output_path.display());
-    Ok(())
-}
-
-fn print_simple_summary(results: &[MethodResult]) {
-    println!("\n📊 ASYMMETRIC ANALYSIS RESULTS");
-    println!("==============================");
-    
-    // Find best overall
-    let best = results.iter()
-        .max_by(|a, b| a.combined_score.partial_cmp(&b.combined_score).unwrap())
-        .unwrap();
-    
-    println!("\n🏆 BEST METHOD:");
-    println!("   Method: {}", best.method);
-    println!("   Parameters: {}", best.parameters);
-    println!("   Combined Score: {:.1}", best.combined_score);
-    println!("   Median Gain/Loss Ratio: {:.1}%", best.median_gain_loss_ratio);
-    println!("   Median Accuracy: {:.1}%", best.median_accuracy);
-    println!("   Success Rate: {:.1}% ({}/{})", 
-             best.success_rate, best.score_90_110, best.total_files);
-    
-    // Show top 5
-    let mut sorted_by_score = results.to_vec();
-    sorted_by_score.sort_by(|a, b| b.combined_score.partial_cmp(&a.combined_score).unwrap());
-    
-    println!("\n🏅 TOP 5 METHODS:");
-    println!("Rank | Method                  | Score | Ratio% | Acc%  | Success%");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    
-    for (i, result) in sorted_by_score.iter().take(5).enumerate() {
-        println!("{:4} | {:23} | {:5.1} | {:6.1} | {:5.1} | {:8.1}",
-                 i + 1,
-                 result.method,
-                 result.combined_score,
-                 result.median_gain_loss_ratio,
-                 result.median_accuracy,
-                 result.success_rate);
-    }
-    
-    println!("\n🎯 RECOMMENDATION:");
-    println!("Use '{}' with parameters: {}", best.method, best.parameters);
-    println!("This provides the best balance of accuracy and loss preservation.");
-}
-    all_results: &[MethodResult],
-    _validated_results: &[(MethodResult, CrossValidationResult)],
-    pareto_optimal: &[&MethodResult],
-    output_path: &Path
-) -> Result<(), Box<dyn std::error::Error>> {
-    let mut wtr = Writer::from_path(output_path)?;
-    
-    // Write header
-    wtr.write_record(&[
-        "Method",
-        "Parameters",
-        "Combined Score",
-        "Median Gain/Loss %",
-        "Median Accuracy %",
-        "Success Rate %",
-        "Gain Reduction %",
-        "Loss Reduction %",
-        "Files Balanced 85-115%",
-        "98-102%",
-        "95-105%",
-        "90-110%",
-        "Accuracy Score",
-        "Balance Score",
-        "Preservation Score",
-        "Flat Terrain Score",
-        "Hilly Terrain Score",
-        "Mountain Terrain Score",
-        "Is Pareto Optimal",
-        "Total Files",
-    ])?;
-    
-    // Sort by combined score
-    let mut sorted_results = all_results.to_vec();
-    sorted_results.sort_by(|a, b| b.combined_score.partial_cmp(&a.combined_score).unwrap());
-    
-    // Check if result is Pareto optimal
-    let pareto_set: Vec<String> = pareto_optimal.iter()
-        .map(|m| format!("{} ({})", m.method, m.parameters))
-        .collect();
-    
-    // Write data
-    for result in sorted_results {
-        let key = format!("{} ({})", result.method, result.parameters);
-        let is_pareto = if pareto_set.contains(&key) { "Yes" } else { "No" };
-        
-        wtr.write_record(&[
-            &result.method,
-            &result.parameters,
-            &format!("{:.2}", result.combined_score),
-            &format!("{:.1}", result.median_gain_loss_ratio),
-            &format!("{:.2}", result.median_accuracy),
-            &format!("{:.1}", result.success_rate),
-            &format!("{:.1}", result.gain_reduction_percent),
-            &format!("{:.1}", result.loss_reduction_percent),
-            &result.files_balanced_85_115.to_string(),
-            &result.score_98_102.to_string(),
-            &result.score_95_105.to_string(),
-            &result.score_90_110.to_string(),
-            &format!("{:.2}", result.weighted_accuracy_score),
-            &format!("{:.2}", result.gain_loss_balance_score),
-            &format!("{:.2}", result.loss_preservation_score),
-            &format!("{:.2}", result.flat_terrain_score),
-            &format!("{:.2}", result.hilly_terrain_score),
-            &format!("{:.2}", result.mountain_terrain_score),
-            is_pareto,
-            &result.total_files.to_string(),
-        ])?;
-    }
-    
-    wtr.flush()?;
-    println!("\n✅ Results saved to: {}", output_path.display());
-    Ok(())
-}
-
-fn write_terrain_specific_results(
-    results: &[MethodResult],
-    output_path: &Path
-) -> Result<(), Box<dyn std::error::Error>> {
-    let mut wtr = Writer::from_path(output_path)?;
-    
-    // Group methods by terrain performance
-    let mut flat_best: Vec<&MethodResult> = results.iter()
-        .filter(|r| r.flat_terrain_score > 0.0)
-        .collect();
-    flat_best.sort_by(|a, b| b.flat_terrain_score.partial_cmp(&a.flat_terrain_score).unwrap());
-    
-    let mut hilly_best: Vec<&MethodResult> = results.iter()
-        .filter(|r| r.hilly_terrain_score > 0.0)
-        .collect();
-    hilly_best.sort_by(|a, b| b.hilly_terrain_score.partial_cmp(&a.hilly_terrain_score).unwrap());
-    
-    let mut mountain_best: Vec<&MethodResult> = results.iter()
-        .filter(|r| r.mountain_terrain_score > 0.0)
-        .collect();
-    mountain_best.sort_by(|a, b| b.mountain_terrain_score.partial_cmp(&a.mountain_terrain_score).unwrap());
-    
-    // Write header
-    wtr.write_record(&[
-        "Terrain Type",
-        "Best Method",
-        "Parameters",
-        "Terrain Score",
-        "Median Accuracy %",
-        "Median Gain/Loss %",
-        "Success Rate %",
-    ])?;
-    
-    // Write top 3 for each terrain type
-    for (terrain_name, terrain_results) in &[
-        ("Flat/Rolling", &flat_best),
-        ("Hilly", &hilly_best),
-        ("Mountainous", &mountain_best),
-    ] {
-        for (i, method) in terrain_results.iter().take(3).enumerate() {
-            let rank = if i == 0 { "Best" } else { &format!("#{}", i + 1) };
-            let terrain_score_str = format!("{:.2}", match *terrain_name {
-                "Flat/Rolling" => method.flat_terrain_score,
-                "Hilly" => method.hilly_terrain_score,
-                "Mountainous" => method.mountain_terrain_score,
-                _ => 0.0,
-            });
-            let method_with_rank = format!("{} {}", rank, method.method);
-            
-            let median_accuracy_str = format!("{:.2}", method.median_accuracy);
-            let median_ratio_str = format!("{:.1}", method.median_gain_loss_ratio);
-            let success_rate_str = format!("{:.1}", method.success_rate);
-            
-            wtr.write_record(&[
-                terrain_name,
-                method_with_rank.as_str(),
-                &method.parameters,
-                &terrain_score_str,
-                &median_accuracy_str,
-                &median_ratio_str,
-                &success_rate_str,
-            ])?;
-        }
-    }
-    
-    wtr.flush()?;
-    Ok(())
-}
-
-fn print_comprehensive_summary(
-    results: &[MethodResult],
-    validated_results: &[(MethodResult, CrossValidationResult)],
-    pareto_optimal: &[&MethodResult],
-) {
-    println!("\n📊 COMPREHENSIVE ASYMMETRIC METHODS ANALYSIS SUMMARY");
-    println!("===================================================");
-    
-    // Find best overall
     let best = results.iter()
         .max_by(|a, b| a.combined_score.partial_cmp(&b.combined_score).unwrap())
         .unwrap();
@@ -1387,12 +946,13 @@ fn print_comprehensive_summary(
     println!("   Method: {}", best.method);
     println!("   Parameters: {}", best.parameters);
     println!("   Combined Score: {:.2}", best.combined_score);
-    println!("   Median Gain/Loss Ratio: {:.1}% (vs 53.5% baseline)", best.median_gain_loss_ratio);
+    println!("   Median Gain/Loss Ratio: {:.1}%", best.median_gain_loss_ratio);
     println!("   Median Accuracy: {:.2}%", best.median_accuracy);
+    println!("   Success Rate: {:.1}% ({}/{} within ±10%)", 
+             best.success_rate, best.score_90_110, best.total_files);
     println!("   Gain reduction: {:.1}%, Loss reduction: {:.1}%", 
-                best.gain_reduction_percent, best.loss_reduction_percent);
+             best.gain_reduction_percent, best.loss_reduction_percent);
     
-    // Show top 10
     let mut sorted_by_score = results.to_vec();
     sorted_by_score.sort_by(|a, b| b.combined_score.partial_cmp(&a.combined_score).unwrap());
     
@@ -1402,27 +962,14 @@ fn print_comprehensive_summary(
     
     for (i, result) in sorted_by_score.iter().take(10).enumerate() {
         println!("{:4} | {:23} | {:23} | {:6.2} | {:6.1} | {:5.1} | {:8} | {:8.1}",
-                    i + 1,
-                    result.method,
-                    result.parameters,
-                    result.combined_score,
-                    result.median_gain_loss_ratio,
-                    result.median_accuracy,
-                    result.files_balanced_85_115,
-                    result.success_rate);
-    }
-    
-    // Pareto optimal solutions
-    println!("\n🎯 PARETO OPTIMAL SOLUTIONS ({} found):", pareto_optimal.len());
-    println!("These methods are not dominated by any other on all objectives:");
-    for (i, method) in pareto_optimal.iter().take(5).enumerate() {
-        println!("{}. {} ({}) - Acc: {:.1}%, Ratio: {:.1}%, Loss Red: {:.1}%",
-                    i + 1,
-                    method.method,
-                    method.parameters,
-                    method.median_accuracy,
-                    method.median_gain_loss_ratio,
-                    method.loss_reduction_percent);
+                 i + 1,
+                 result.method,
+                 result.parameters,
+                 result.combined_score,
+                 result.median_gain_loss_ratio,
+                 result.median_accuracy,
+                 result.files_balanced_85_115,
+                 result.success_rate);
     }
     
     // Method type analysis
@@ -1442,11 +989,11 @@ fn print_comprehensive_summary(
             .filter(|r| r.method == *method_type)
             .max_by(|a, b| a.combined_score.partial_cmp(&b.combined_score).unwrap()) {
             
-            println!("{}: score={:.1}, ratio={:.1}%, acc={:.1}%",
-                        method_type,
-                        best_of_type.combined_score,
-                        best_of_type.median_gain_loss_ratio,
-                        best_of_type.median_accuracy);
+            println!("  {}: score={:.1}, ratio={:.1}%, acc={:.1}%",
+                     method_type,
+                     best_of_type.combined_score,
+                     best_of_type.median_gain_loss_ratio,
+                     best_of_type.median_accuracy);
         }
     }
     
@@ -1457,12 +1004,11 @@ fn print_comprehensive_summary(
         .min_by_key(|r| ((r.median_gain_loss_ratio - 100.0).abs() * 100.0) as i32)
         .unwrap();
     
-    println!("• Best gain/loss ratio: {} ({}) = {:.1}% (vs 53.5% baseline)",
-                best_ratio.method, best_ratio.parameters, best_ratio.median_gain_loss_ratio);
+    println!("• Best gain/loss ratio: {} ({}) = {:.1}%",
+             best_ratio.method, best_ratio.parameters, best_ratio.median_gain_loss_ratio);
     
-    // Find methods that significantly improve the 53.5% baseline
     let improved_methods: Vec<_> = results.iter()
-        .filter(|r| r.median_gain_loss_ratio > 70.0)  // Much better than 53.5%
+        .filter(|r| r.median_gain_loss_ratio > 70.0)
         .take(5)
         .collect();
     
@@ -1470,13 +1016,36 @@ fn print_comprehensive_summary(
         println!("\n• Methods significantly improving gain/loss balance (>70%):");
         for method in improved_methods {
             println!("  - {} ({}): {:.1}% ratio, {:.1}% accuracy",
-                        method.method, method.parameters, 
-                        method.median_gain_loss_ratio, method.median_accuracy);
+                     method.method, method.parameters, 
+                     method.median_gain_loss_ratio, method.median_accuracy);
         }
     }
     
+    // Terrain analysis
+    println!("\n🏔️ TERRAIN-SPECIFIC PERFORMANCE:");
+    let mut flat_methods: Vec<_> = results.iter()
+        .filter(|r| r.flat_terrain_score > 0.0)
+        .collect();
+    flat_methods.sort_by(|a, b| b.flat_terrain_score.partial_cmp(&a.flat_terrain_score).unwrap());
+    
+    let mut mountain_methods: Vec<_> = results.iter()
+        .filter(|r| r.mountain_terrain_score > 0.0)
+        .collect();
+    mountain_methods.sort_by(|a, b| b.mountain_terrain_score.partial_cmp(&a.mountain_terrain_score).unwrap());
+    
+    if let Some(best_flat) = flat_methods.first() {
+        println!("• Best for flat terrain: {} ({}) - score: {:.1}",
+                 best_flat.method, best_flat.parameters, best_flat.flat_terrain_score);
+    }
+    
+    if let Some(best_mountain) = mountain_methods.first() {
+        println!("• Best for mountainous terrain: {} ({}) - score: {:.1}",
+                 best_mountain.method, best_mountain.parameters, best_mountain.mountain_terrain_score);
+    }
+    
     println!("\n🎯 FINAL RECOMMENDATION:");
-    println!("Based on comprehensive analysis of {} parameter combinations,", results.len());
+    println!("Based on comprehensive analysis of {} parameter combinations across {} files,", 
+             results.len(), best.total_files);
     println!("the optimal method for preserving elevation loss while maintaining accuracy is:");
     println!("\n   {} with {}", best.method, best.parameters);
     println!("\nThis achieves:");
@@ -1486,14 +1055,5 @@ fn print_comprehensive_summary(
     println!("  • {} files ({:.1}%) with balanced gain/loss ratios",
              best.files_balanced_85_115,
              (best.files_balanced_85_115 as f32 / best.total_files as f32) * 100.0);
-    
-    // Display cross-validation results if available
-    if !validated_results.is_empty() {
-        println!("\n🔬 CROSS-VALIDATION INSIGHTS:");
-        println!("Top methods showed consistent performance across data splits:");
-        for (method, cv_result) in validated_results.iter().take(3) {
-            println!("  • {}: consistency score {:.1}%", 
-                     method.method, cv_result.consistency_score);
-        }
-    }
+    println!("  • {:.1}% of files within ±10% accuracy", best.success_rate);
 }

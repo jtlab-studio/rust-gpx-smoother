@@ -172,9 +172,6 @@ impl ElevationData {
             uniform_elevations.push(elevation);
         }
         
-        println!("DEBUG [DISTBASED]: Resampled {} original points to {} uniform points at {:.1}m intervals", 
-                 self.enhanced_altitude.len(), uniform_elevations.len(), interval_meters);
-        
         (uniform_distances, uniform_elevations)
     }
     
@@ -304,10 +301,9 @@ impl ElevationData {
         }
         
         self.altitude_change = filtered_changes;
-        println!("DEBUG [DISTBASED]: Applied deadband filtering with {:.1}m threshold", threshold_meters);
     }
     
-        fn apply_distance_based_processing(&mut self) {
+    fn apply_distance_based_processing(&mut self) {
         let original_gain = self.accumulated_ascent.last().unwrap_or(&0.0).clone();
         
         // IMPROVED: Better terrain classification
@@ -334,53 +330,42 @@ impl ElevationData {
             _ => (45, 12.0, 4.0),
         };
         
-        println!("DEBUG [DISTBASED]: Terrain: {}, Gain/km: {:.1}m, Window: {}, MaxGrad: {}%, SpikeThresh: {}m", 
-                 terrain_type, gain_per_km, smoothing_window, max_gradient, spike_threshold);
-        
         // CHANGE: Apply terrain-specific processing
         self.apply_terrain_adaptive_smoothing(smoothing_window, max_gradient, spike_threshold);
         
-        let processed_gain = self.accumulated_ascent.last().unwrap_or(&0.0).clone();
-        println!("DEBUG [DISTBASED]: Processing complete - Original: {:.1}m, Processed: {:.1}m", 
-                 original_gain, processed_gain);
+        let _processed_gain = self.accumulated_ascent.last().unwrap_or(&0.0).clone();
     }
     
     fn apply_smoothing_variant(&mut self, variant: SmoothingVariant) {
         let hilliness_ratio = self.overall_uphill_gradient;
-        let original_gain = self.accumulated_ascent.last().unwrap_or(&0.0).clone();
+        let _original_gain = self.accumulated_ascent.last().unwrap_or(&0.0).clone();
         
         match variant {
             SmoothingVariant::Original => {
                 // Original adaptive smoothing
                 if hilliness_ratio < 20.0 {
-                    println!("DEBUG [ORIGINAL]: Route is FLAT ({:.2}m/km) - applying 83-point rolling window, NO capping", hilliness_ratio);
                     self.altitude_change = Self::rolling_mean(&self.altitude_change, 83);
                 } else {
-                    println!("DEBUG [ORIGINAL]: Route is HILLY ({:.2}m/km) - applying 5-point rolling window, capping will follow", hilliness_ratio);
                     self.altitude_change = Self::rolling_mean(&self.altitude_change, 5);
                 }
             },
             
             SmoothingVariant::Capping => {
                 // Always 5-point smoothing, always apply capping
-                println!("DEBUG [CAPPING]: Route ({:.2}m/km) - applying 5-point rolling window, capping will be applied to ALL routes", hilliness_ratio);
                 self.altitude_change = Self::rolling_mean(&self.altitude_change, 5);
             },
             
             SmoothingVariant::Flat21 => {
                 // 21-point for flat, 5-point for hilly
                 if hilliness_ratio < 20.0 {
-                    println!("DEBUG [FLAT21]: Route is FLAT ({:.2}m/km) - applying 21-point rolling window, NO capping", hilliness_ratio);
                     self.altitude_change = Self::rolling_mean(&self.altitude_change, 21);
                 } else {
-                    println!("DEBUG [FLAT21]: Route is HILLY ({:.2}m/km) - applying 5-point rolling window, capping will follow", hilliness_ratio);
                     self.altitude_change = Self::rolling_mean(&self.altitude_change, 5);
                 }
             },
             
             SmoothingVariant::PostCap => {
                 // Always 5-point smoothing, capping will be applied, then 83-point post-capping smoothing
-                println!("DEBUG [POSTCAP]: Route ({:.2}m/km) - applying 5-point rolling window, capping + 83-point post-capping smoothing will follow", hilliness_ratio);
                 self.altitude_change = Self::rolling_mean(&self.altitude_change, 5);
             },
             
@@ -394,8 +379,7 @@ impl ElevationData {
         self.calculate_gradients();
         self.recalculate_accumulated_values_after_smoothing();
         
-        let smoothed_gain = self.accumulated_ascent.last().unwrap_or(&0.0).clone();
-        println!("DEBUG: After initial smoothing - Original gain: {:.1}m, Smoothed gain: {:.1}m", original_gain, smoothed_gain);
+        let _smoothed_gain = self.accumulated_ascent.last().unwrap_or(&0.0).clone();
     }
     
     fn apply_gradient_capping_variant(&mut self, variant: SmoothingVariant) {
@@ -415,13 +399,10 @@ impl ElevationData {
         };
         
         if !should_apply_capping {
-            println!("DEBUG: Route has {:.2}m/km elevation gain - NO gradient capping applied", hilliness_ratio);
             return;
         }
         
-        println!("DEBUG: Route has {:.2}m/km elevation gain - applying gradient capping", hilliness_ratio);
-        
-        let pre_capping_gain = self.accumulated_ascent.last().unwrap_or(&0.0).clone();
+        let _pre_capping_gain = self.accumulated_ascent.last().unwrap_or(&0.0).clone();
         
         // Define thresholds: (limit, max positive gradient, max negative gradient)
         let thresholds = vec![
@@ -434,17 +415,14 @@ impl ElevationData {
         
         for (limit, max_up, max_down) in thresholds {
             if hilliness_ratio < limit {
-                let mut capped_count = 0;
+                let _capped_count = 0;
                 for i in 0..self.gradient_percent.len() {
                     if self.gradient_percent[i] > max_up {
                         self.altitude_change[i] = max_up * self.distance_change[i] / 100.0;
-                        capped_count += 1;
                     } else if self.gradient_percent[i] < -max_down {
                         self.altitude_change[i] = -max_down * self.distance_change[i] / 100.0;
-                        capped_count += 1;
                     }
                 }
-                println!("DEBUG: Applied gradient capping: {} gradients capped to +{}%/-{}%", capped_count, max_up, max_down);
                 break;
             }
         }
@@ -452,8 +430,7 @@ impl ElevationData {
         self.calculate_gradients();
         self.recalculate_accumulated_values_after_smoothing();
         
-        let post_capping_gain = self.accumulated_ascent.last().unwrap_or(&0.0).clone();
-        println!("DEBUG: After gradient capping - Pre-capping: {:.1}m, Post-capping: {:.1}m", pre_capping_gain, post_capping_gain);
+        let _post_capping_gain = self.accumulated_ascent.last().unwrap_or(&0.0).clone();
     }
     
     fn apply_post_capping_smoothing(&mut self, variant: SmoothingVariant) {
@@ -461,18 +438,14 @@ impl ElevationData {
             return; // Only apply post-capping smoothing for PostCap variant
         }
         
-        println!("DEBUG [POSTCAP]: Applying 83-point rolling window AFTER gradient capping");
-        
-        let pre_post_smoothing_gain = self.accumulated_ascent.last().unwrap_or(&0.0).clone();
+        let _pre_post_smoothing_gain = self.accumulated_ascent.last().unwrap_or(&0.0).clone();
         
         // Apply 83-point smoothing to the capped altitude changes
         self.altitude_change = Self::rolling_mean(&self.altitude_change, 83);
         self.calculate_gradients();
         self.recalculate_accumulated_values_after_smoothing();
         
-        let post_post_smoothing_gain = self.accumulated_ascent.last().unwrap_or(&0.0).clone();
-        println!("DEBUG [POSTCAP]: After post-capping 83-point smoothing - Pre: {:.1}m, Post: {:.1}m", 
-                 pre_post_smoothing_gain, post_post_smoothing_gain);
+        let _post_post_smoothing_gain = self.accumulated_ascent.last().unwrap_or(&0.0).clone();
     }
     
     fn separate_ascent_descent(&mut self) {
@@ -529,23 +502,12 @@ impl ElevationData {
     }
     
     fn process_elevation_data_with_variant(&mut self, variant: SmoothingVariant) {
-        let variant_name = match variant {
-            SmoothingVariant::Original => "ORIGINAL",
-            SmoothingVariant::Capping => "CAPPING",
-            SmoothingVariant::Flat21 => "FLAT21",
-            SmoothingVariant::PostCap => "POSTCAP",
-            SmoothingVariant::DistBased => "DISTBASED",
-        };
-        
-        println!("DEBUG [{}]: Starting elevation data processing...", variant_name);
-        
         // Step 1: Calculate initial altitude changes
         self.calculate_altitude_changes();
         
         // Step 2: Calculate accumulated ascent and descent
         self.calculate_accumulated_ascent_descent();
-        let initial_gain = self.accumulated_ascent.last().unwrap_or(&0.0);
-        println!("DEBUG [{}]: Initial elevation gain: {:.1}m", variant_name, initial_gain);
+        let _initial_gain = self.accumulated_ascent.last().unwrap_or(&0.0);
         
         // Step 3: Calculate initial gradients
         self.calculate_gradients();
@@ -558,9 +520,7 @@ impl ElevationData {
         
         // For DistBased, processing is complete at this point
         if matches!(variant, SmoothingVariant::DistBased) {
-            let final_gain = self.accumulated_ascent.last().unwrap_or(&0.0);
-            println!("DEBUG [{}]: Final elevation gain: {:.1}m", variant_name, final_gain);
-            println!("DEBUG [{}]: Elevation processing complete.", variant_name);
+            let _final_gain = self.accumulated_ascent.last().unwrap_or(&0.0);
             return;
         }
         
@@ -583,9 +543,7 @@ impl ElevationData {
             self.overall_downhill_gradient = self.accumulated_descent.last().unwrap_or(&0.0) / total_distance_km;
         }
         
-        let final_gain = self.accumulated_ascent.last().unwrap_or(&0.0);
-        println!("DEBUG [{}]: Final elevation gain: {:.1}m", variant_name, final_gain);
-        println!("DEBUG [{}]: Elevation processing complete.", variant_name);
+        let _final_gain = self.accumulated_ascent.last().unwrap_or(&0.0);
     }
     
     // Legacy method for backward compatibility
@@ -636,8 +594,6 @@ pub fn create_custom_distbased_adaptive(elevations: Vec<f64>, distances: Vec<f64
 impl ElevationData {
     /// Adaptive distance-based processing with terrain-specific parameters
     fn apply_adaptive_distance_based_processing(&mut self) {
-        println!("DEBUG [ADAPTIVE-DISTBASED]: Starting adaptive distance-based processing...");
-        
         // First calculate terrain type
         self.calculate_altitude_changes();
         self.calculate_accumulated_ascent_descent();
@@ -648,15 +604,12 @@ impl ElevationData {
         // Determine adaptive parameters based on three terrain tiers
         let (deadband_threshold, gaussian_window, grid_interval) = if hilliness_ratio < 20.0 {
             // FLAT ROUTES: Fine-tuned for flat terrain accuracy
-            println!("DEBUG [ADAPTIVE-DISTBASED]: FLAT terrain ({:.2}m/km) - using 1.2m deadband, 120m Gaussian", hilliness_ratio);
             (1.2, 12, 10.0) // 1.2m deadband (was 1.5), 12 points = 120m Gaussian (was 150m), 10m grid
         } else if hilliness_ratio < 40.0 {
             // HILLY ROUTES: Current parameters working well
-            println!("DEBUG [ADAPTIVE-DISTBASED]: HILLY terrain ({:.2}m/km) - using 2.0m deadband, 150m Gaussian", hilliness_ratio);
             (2.0, 15, 10.0) // 2.0m deadband, 15 points = 150m Gaussian, 10m grid
         } else {
             // SUPER HILLY ROUTES: More aggressive parameters for high elevation gain routes
-            println!("DEBUG [ADAPTIVE-DISTBASED]: SUPER HILLY terrain ({:.2}m/km) - using 1.5m deadband, 100m Gaussian", hilliness_ratio);
             (1.5, 10, 10.0) // 1.5m deadband, 10 points = 100m Gaussian, 10m grid
         };
         
@@ -664,17 +617,14 @@ impl ElevationData {
         let (uniform_distances, uniform_elevations) = self.resample_to_uniform_distance(grid_interval);
         
         if uniform_elevations.is_empty() {
-            println!("DEBUG [ADAPTIVE-DISTBASED]: Failed to resample data, falling back to original");
             return;
         }
         
         // Step 2: Median filter for spike removal (3-point window)
         let median_smoothed = Self::median_filter(&uniform_elevations, 3);
-        println!("DEBUG [ADAPTIVE-DISTBASED]: Applied median filter (30m window)");
         
         // Step 3: Adaptive Gaussian smoothing 
         let gaussian_smoothed = Self::gaussian_smooth(&median_smoothed, gaussian_window);
-        println!("DEBUG [ADAPTIVE-DISTBASED]: Applied Gaussian smoothing ({}m window)", gaussian_window * grid_interval as usize);
         
         // Step 4: Recalculate altitude changes from smoothed elevations
         let mut smoothed_altitude_changes = vec![0.0];
@@ -699,10 +649,6 @@ impl ElevationData {
         self.recalculate_accumulated_values_after_smoothing();
         
         let _processed_gain = self.accumulated_ascent.last().unwrap_or(&0.0).clone();
-
-
-
-        // println!("DEBUG [ADAPTIVE-DISTBASED]: Processing complete - Original: {:.1}m, Processed: {:.1}m", ); // Commented out debug line
     }
     
     /// Adaptive deadband filtering with terrain-specific threshold
@@ -753,7 +699,6 @@ impl ElevationData {
         }
         
         self.altitude_change = filtered_changes;
-        println!("DEBUG [ADAPTIVE-DISTBASED]: Applied adaptive deadband filtering with {:.1}m threshold", threshold_meters);
     }
     
     fn apply_terrain_adaptive_smoothing(&mut self, window: usize, max_gradient: f64, spike_threshold: f64) {
@@ -869,14 +814,9 @@ impl ElevationData {
     }
 }
 
-
-
 impl ElevationData {
     /// Custom interval processing for testing different distance intervals
-    /// Custom interval processing for testing different distance intervals
     pub fn apply_custom_interval_processing(&mut self, interval_meters: f64) {
-        println!("DEBUG [CUSTOM-INTERVAL]: Starting custom interval processing with {:.1}m intervals...", interval_meters);
-        
         // First calculate terrain type for adaptive parameters
         self.calculate_altitude_changes();
         self.calculate_accumulated_ascent_descent();
@@ -886,21 +826,18 @@ impl ElevationData {
         
         // Determine adaptive parameters based on terrain and interval
         let (deadband_threshold, gaussian_window) = if hilliness_ratio < 20.0 {
-            println!("DEBUG [CUSTOM-INTERVAL]: FLAT terrain ({:.2}m/km)", hilliness_ratio);
             let deadband = match interval_meters as u32 {
                 1 => 0.8, 3 => 1.0, 6 => 1.2, _ => 1.5,
             };
             let window = ((120.0 / interval_meters).round() as usize).max(5).min(50);
             (deadband, window)
         } else if hilliness_ratio < 40.0 {
-            println!("DEBUG [CUSTOM-INTERVAL]: HILLY terrain ({:.2}m/km)", hilliness_ratio);
             let deadband = match interval_meters as u32 {
                 1 => 1.5, 3 => 1.8, 6 => 2.0, _ => 2.5,
             };
             let window = ((150.0 / interval_meters).round() as usize).max(5).min(30);
             (deadband, window)
         } else {
-            println!("DEBUG [CUSTOM-INTERVAL]: SUPER HILLY terrain ({:.2}m/km)", hilliness_ratio);
             let deadband = match interval_meters as u32 {
                 1 => 2.0, 3 => 1.8, 6 => 1.5, _ => 2.0,
             };
