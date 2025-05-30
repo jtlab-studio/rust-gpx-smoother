@@ -204,12 +204,49 @@ fn process_single_gpx(
     }
     
     // Write processed GPX file
-    let filename = gpx_path.file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("unknown.gpx");
-    let output_path = Path::new(output_dir).join(filename);
+    // Try to get track name from GPX data, fallback to original filename
+    let output_filename = if let Some(track) = new_gpx.tracks.first() {
+        if let Some(name) = &track.name {
+            // Clean the track name to make it filesystem-safe
+            let clean_name = name
+                .chars()
+                .map(|c| match c {
+                    '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
+                    _ => c
+                })
+                .collect::<String>();
+            format!("{}.gpx", clean_name.trim())
+        } else {
+            gpx_path.file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("unknown.gpx")
+                .to_string()
+        }
+    } else {
+        gpx_path.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown.gpx")
+            .to_string()
+    };
     
-    let output_file = File::create(&output_path)?;
+    let output_path = Path::new(output_dir).join(&output_filename);
+    
+    // Check if file already exists and add number if needed
+    let final_output_path = if output_path.exists() {
+        let mut counter = 1;
+        loop {
+            let stem = output_path.file_stem().unwrap().to_str().unwrap();
+            let new_path = Path::new(output_dir).join(format!("{}_{}.gpx", stem, counter));
+            if !new_path.exists() {
+                break new_path;
+            }
+            counter += 1;
+        }
+    } else {
+        output_path
+    };
+    
+    let output_file = File::create(&final_output_path)?;
     let writer = BufWriter::new(output_file);
     write(&new_gpx, writer)?;
     
@@ -227,7 +264,7 @@ fn process_single_gpx(
     };
     
     Ok(ProcessingResult {
-        filename: filename.to_string(),
+        filename: output_filename,
         original_points: coords.len(),
         processed_points: new_gpx.tracks.iter()
             .flat_map(|t| &t.segments)

@@ -13,6 +13,8 @@ mod improved_scoring;
 mod outlier_analysis;
 mod simplified_analysis;
 mod gpx_output_analysis;
+mod butterworth_analysis;
+mod hybrid_analysis;
 
 use custom_smoother::{ElevationData, SmoothingVariant};
 
@@ -110,10 +112,10 @@ pub fn load_official_elevation_data() -> Result<HashMap<String, u32>, Box<dyn st
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let gpx_folder = r"C:\Users\Dzhu\Documents\GPX Files";
     
-    // Run the GPX output analysis at 6.1m interval
-    println!("\n🔄 Running GPX output analysis at 6.1m interval...");
-    if let Err(e) = gpx_output_analysis::run_gpx_output_analysis(gpx_folder) {
-        eprintln!("Error in GPX output analysis: {}", e);
+    // Run the hybrid analysis
+    println!("\n🔄 Running hybrid Butterworth + Distance-based analysis...");
+    if let Err(e) = hybrid_analysis::run_hybrid_analysis(gpx_folder) {
+        eprintln!("Error in hybrid analysis: {}", e);
     }
     
     Ok(())

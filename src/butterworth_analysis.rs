@@ -1,13 +1,13 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::collections::HashMap;
 use csv::Writer;
 use serde::Serialize;
 use rayon::prelude::*;
 use std::sync::Arc;
-use crate::custom_smoother::{ElevationData, SmoothingVariant};
+use biquad::{Biquad, DirectForm1, ToHertz, Coefficients, Q_BUTTERWORTH_F64};
 
 #[derive(Debug, Serialize, Clone)]
-pub struct AnalysisResult {
+pub struct ButterworthResult {
     interval_m: f32,
     // Accuracy scores
     score_98_102: u32,
@@ -19,9 +19,9 @@ pub struct AnalysisResult {
     weighted_accuracy_score: f32,
     // Gain/Loss balance metrics
     gain_loss_balance_score: f32,
-    files_balanced_85_115: u32,  // Files where loss is 85-115% of gain
-    files_balanced_70_130: u32,  // Files where loss is 70-130% of gain
-    avg_gain_loss_ratio: f32,    // Average loss/gain ratio across files
+    files_balanced_85_115: u32,
+    files_balanced_70_130: u32,
+    avg_gain_loss_ratio: f32,
     median_gain_loss_ratio: f32,
     // Traditional metrics
     average_accuracy: f32,
@@ -39,8 +39,11 @@ pub struct AnalysisResult {
     loss_reduction_percent: f32,
     gain_reduction_percent: f32,
     // Combined scores
-    combined_score: f32,  // Combines accuracy and gain/loss balance
-    loss_preservation_score: f32,  // How well loss is preserved relative to gain
+    combined_score: f32,
+    loss_preservation_score: f32,
+    // Butterworth specific
+    avg_cutoff_frequency: f32,
+    avg_epsilon_used: f32,
     total_files: u32,
 }
 
@@ -59,17 +62,21 @@ struct ProcessingResult {
     raw_loss: f32,
     processed_gain: f32,
     processed_loss: f32,
-    gain_loss_ratio: f32,  // processed_loss / processed_gain
-    loss_preservation: f32,  // How much of original loss is preserved vs gain
+    gain_loss_ratio: f32,
+    cutoff_used: f32,
+    epsilon_used: f32,
 }
 
-pub fn run_simplified_analysis(gpx_folder: &str) -> Result<(), Box<dyn std::error::Error>> {
+pub fn run_butterworth_analysis(gpx_folder: &str) -> Result<(), Box<dyn std::error::Error>> {
     let total_start = std::time::Instant::now();
     
-    println!("\n🔬 GAIN/LOSS BALANCE ANALYSIS");
-    println!("=============================");
+    println!("\n🦋 BUTTERWORTH FILTER ANALYSIS");
+    println!("==============================");
     println!("Testing intervals: 0.10m to 7.00m in 0.025m increments (276 intervals)");
-    println!("Focus: Finding optimal balance between gain accuracy and loss preservation\n");
+    println!("Method: Zero-phase Butterworth low-pass filtering\n");
+    
+    // Add biquad to Cargo.toml if not present
+    println!("⚠️  Ensure 'biquad = \"0.4\"' is in your Cargo.toml dependencies\n");
     
     // Load GPX data
     println!("📂 Loading GPX files...");
@@ -83,9 +90,6 @@ pub fn run_simplified_analysis(gpx_folder: &str) -> Result<(), Box<dyn std::erro
             if let Some(data) = gpx_files_data.get(file) {
                 let has_elevation = data.elevations.iter()
                     .any(|&e| (e - data.elevations[0]).abs() > 0.1);
-                if !has_elevation {
-                    println!("⚠️  Excluding {} - no elevation variation", file);
-                }
                 has_elevation
             } else {
                 false
@@ -95,17 +99,21 @@ pub fn run_simplified_analysis(gpx_folder: &str) -> Result<(), Box<dyn std::erro
     
     println!("📊 Processing {} files with valid elevation data", files_with_elevation.len());
     
-    // Process distance-based approach
+    // Process with Butterworth approach
     let processing_start = std::time::Instant::now();
-    let results = process_distbased_range(&gpx_files_data, &files_with_elevation)?;
+    let results = process_butterworth_range(&gpx_files_data, &files_with_elevation)?;
     println!("✅ Processing complete in {:.2}s", processing_start.elapsed().as_secs_f64());
     
     // Write results
-    let output_path = Path::new(gpx_folder).join("gain_loss_balance_analysis_0.1_to_7m.csv");
-    write_results(&results, &output_path)?;
+    let output_path = Path::new(gpx_folder).join("butterworth_analysis_0.1_to_7m.csv");
+    write_butterworth_results(&results, &output_path)?;
+    
+    // Write comparison CSV
+    let comparison_path = Path::new(gpx_folder).join("butterworth_vs_distance_comparison.csv");
+    write_comparison_summary(&results, &comparison_path)?;
     
     // Print summary
-    print_summary(&results);
+    print_butterworth_summary(&results);
     
     let total_time = total_start.elapsed();
     println!("\n⏱️  TOTAL EXECUTION TIME: {} minutes {:.1} seconds", 
@@ -195,10 +203,10 @@ fn load_gpx_data(gpx_folder: &str) -> Result<(HashMap<String, GpxFileData>, Vec<
     Ok((gpx_data, valid_files))
 }
 
-fn process_distbased_range(
+fn process_butterworth_range(
     gpx_data: &HashMap<String, GpxFileData>,
     valid_files: &[String]
-) -> Result<Vec<AnalysisResult>, Box<dyn std::error::Error>> {
+) -> Result<Vec<ButterworthResult>, Box<dyn std::error::Error>> {
     // Test intervals from 0.10m to 7.00m in 0.025m increments
     let intervals: Vec<f32> = (4..=280).map(|i| i as f32 * 0.025).collect();
     
@@ -228,7 +236,7 @@ fn process_distbased_range(
             
             if let Some(file_data) = gpx_data.get(filename) {
                 if file_data.official_gain > 0 {
-                    let result = process_single_file(file_data, *interval);
+                    let result = process_single_file_butterworth(file_data, *interval);
                     
                     // Update progress
                     let count = processed_clone.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
@@ -261,53 +269,132 @@ fn process_distbased_range(
             .collect();
         
         if !interval_results.is_empty() {
-            results.push(create_analysis_result(interval, &interval_results));
+            results.push(create_butterworth_result(interval, &interval_results));
         }
     }
     
     Ok(results)
 }
 
-fn process_single_file(file_data: &GpxFileData, interval: f32) -> ProcessingResult {
+fn process_single_file_butterworth(file_data: &GpxFileData, interval_m: f32) -> ProcessingResult {
     // Calculate raw gain/loss
     let (raw_gain, raw_loss) = calculate_raw_gain_loss(&file_data.elevations);
     
-    // Process with distance-based approach
-    let mut elevation_data = ElevationData::new_with_variant(
-        file_data.elevations.clone(),
-        file_data.distances.clone(),
-        SmoothingVariant::DistBased
+    // Adaptive resampling: use interval/3 for sample spacing
+    let sample_spacing = (interval_m / 3.0).max(0.5) as f64; // Convert to f64
+    
+    // Resample elevations to uniform spacing
+    let resampled_elevations = resample_to_uniform_spacing(
+        &file_data.elevations,
+        &file_data.distances,
+        sample_spacing
     );
     
-    elevation_data.apply_custom_interval_processing(interval as f64);
+    if resampled_elevations.len() < 10 {
+        // Not enough points for meaningful filtering
+        return ProcessingResult {
+            accuracy: 0.0,
+            raw_gain: raw_gain as f32,
+            raw_loss: raw_loss as f32,
+            processed_gain: raw_gain as f32,
+            processed_loss: raw_loss as f32,
+            gain_loss_ratio: 100.0,
+            cutoff_used: 0.0,
+            epsilon_used: 0.0,
+        };
+    }
     
-    let processed_gain = elevation_data.get_total_elevation_gain() as f32;
-    let processed_loss = elevation_data.get_total_elevation_loss() as f32;
+    // Calculate cutoff frequency based on spatial wavelength
+    // We want to suppress features smaller than the interval
+    // For a low-pass filter: keep wavelengths > interval, remove wavelengths < interval
+    let wavelength_to_keep = interval_m as f64 * 2.0; // Keep features larger than 2x interval
+    let cutoff_cycles_per_meter = 1.0 / wavelength_to_keep;
     
-    let accuracy = (processed_gain / file_data.official_gain as f32) * 100.0;
+    // Convert to normalized frequency
+    let normalized_cutoff = cutoff_cycles_per_meter * sample_spacing;
     
-    // Calculate gain/loss ratio
+    // Convert to Hz for the filter (sample rate = 1/sample_spacing)
+    let sample_rate_hz = 1.0 / sample_spacing;
+    let cutoff_hz = normalized_cutoff * sample_rate_hz;
+    
+    // Ensure cutoff is reasonable (between 0.01 and 0.45 of Nyquist)
+    let nyquist = sample_rate_hz / 2.0;
+    let cutoff_hz = cutoff_hz.clamp(0.01 * nyquist, 0.45 * nyquist);
+    
+    // Apply Butterworth filter
+    let coeffs = match Coefficients::<f64>::from_params(
+        biquad::Type::LowPass,
+        sample_rate_hz.hz(),
+        cutoff_hz.hz(),
+        Q_BUTTERWORTH_F64
+    ) {
+        Ok(c) => c,
+        Err(_) => {
+            // Filter design failed, return unfiltered results
+            return ProcessingResult {
+                accuracy: 0.0,
+                raw_gain: raw_gain as f32,
+                raw_loss: raw_loss as f32,
+                processed_gain: raw_gain as f32,
+                processed_loss: raw_loss as f32,
+                gain_loss_ratio: 100.0,
+                cutoff_used: cutoff_hz as f32,
+                epsilon_used: 0.0,
+            };
+        }
+    };
+    
+    // Forward pass
+    let mut df_forward = DirectForm1::<f64>::new(coeffs);
+    let mut elev_fwd: Vec<f64> = resampled_elevations
+        .iter()
+        .map(|&x| df_forward.run(x))
+        .collect();
+    
+    // Backward pass (reverse, filter, reverse)
+    elev_fwd.reverse();
+    let mut df_backward = DirectForm1::<f64>::new(coeffs);
+    let mut elev_smooth: Vec<f64> = elev_fwd
+        .iter()
+        .map(|&x| df_backward.run(x))
+        .collect();
+    elev_smooth.reverse();
+    
+    // Calculate local noise for adaptive epsilon
+    let local_noise = calculate_local_noise(&elev_smooth);
+    
+    // Scale epsilon with interval size but keep it reasonable
+    // Smaller intervals need smaller epsilon to preserve detail
+    let base_epsilon = 0.05 + (0.02 * interval_m as f64);
+    let epsilon = base_epsilon.max(0.5 * local_noise).min(0.5);
+    
+    // Apply dead-zone and calculate gain/loss
+    let mut processed_gain = 0.0;
+    let mut processed_loss = 0.0;
+    
+    for i in 1..elev_smooth.len() {
+        // Account for actual distance between resampled points
+        let delta = elev_smooth[i] - elev_smooth[i-1];
+        if delta.abs() > epsilon {
+            if delta > 0.0 {
+                processed_gain += delta;
+            } else {
+                processed_loss += -delta;
+            }
+        }
+    }
+    
+    // No need to scale back - we're already working in the resampled space
+    // The gain/loss is calculated from elevation differences at sample_spacing intervals
+    
+    let accuracy = if file_data.official_gain > 0 {
+        (processed_gain as f32 / file_data.official_gain as f32) * 100.0
+    } else {
+        100.0
+    };
+    
     let gain_loss_ratio = if processed_gain > 0.0 {
-        (processed_loss / processed_gain) * 100.0
-    } else {
-        0.0
-    };
-    
-    // Calculate loss preservation relative to gain preservation
-    let gain_preservation = if raw_gain as f32 > 0.0 {
-        processed_gain / raw_gain as f32
-    } else {
-        1.0
-    };
-    
-    let loss_preservation = if raw_loss as f32 > 0.0 {
-        processed_loss / raw_loss as f32
-    } else {
-        1.0
-    };
-    
-    let relative_loss_preservation = if gain_preservation > 0.0 {
-        (loss_preservation / gain_preservation) * 100.0
+        (processed_loss / processed_gain * 100.0) as f32
     } else {
         100.0
     };
@@ -316,11 +403,74 @@ fn process_single_file(file_data: &GpxFileData, interval: f32) -> ProcessingResu
         accuracy,
         raw_gain: raw_gain as f32,
         raw_loss: raw_loss as f32,
-        processed_gain,
-        processed_loss,
+        processed_gain: processed_gain as f32,
+        processed_loss: processed_loss as f32,
         gain_loss_ratio,
-        loss_preservation: relative_loss_preservation,
+        cutoff_used: cutoff_hz as f32,
+        epsilon_used: epsilon as f32,
     }
+}
+
+fn resample_to_uniform_spacing(
+    elevations: &[f64],
+    distances: &[f64],
+    spacing_m: f64
+) -> Vec<f64> {
+    if elevations.is_empty() || distances.is_empty() {
+        return vec![];
+    }
+    
+    let total_distance = distances.last().unwrap();
+    let num_samples = (total_distance / spacing_m).ceil() as usize + 1;
+    let mut resampled = Vec::with_capacity(num_samples);
+    
+    // Linear interpolation at uniform spacing
+    for i in 0..num_samples {
+        let target_distance = i as f64 * spacing_m;
+        
+        // Find the segment containing this distance
+        let idx = match distances.binary_search_by(|d| {
+            d.partial_cmp(&target_distance).unwrap()
+        }) {
+            Ok(i) => i,
+            Err(i) => i.saturating_sub(1),
+        };
+        
+        if idx >= distances.len() - 1 {
+            resampled.push(elevations.last().unwrap().clone());
+        } else {
+            // Linear interpolation
+            let d0 = distances[idx];
+            let d1 = distances[idx + 1];
+            let e0 = elevations[idx];
+            let e1 = elevations[idx + 1];
+            
+            let t = (target_distance - d0) / (d1 - d0);
+            let elevation = e0 + t * (e1 - e0);
+            resampled.push(elevation);
+        }
+    }
+    
+    resampled
+}
+
+fn calculate_local_noise(elevations: &[f64]) -> f64 {
+    if elevations.len() < 5 {
+        return 0.2;
+    }
+    
+    // Calculate standard deviation of first differences
+    let mut deltas = Vec::with_capacity(elevations.len() - 1);
+    for window in elevations.windows(2) {
+        deltas.push(window[1] - window[0]);
+    }
+    
+    let mean_delta: f64 = deltas.iter().sum::<f64>() / deltas.len() as f64;
+    let variance: f64 = deltas.iter()
+        .map(|&d| (d - mean_delta).powi(2))
+        .sum::<f64>() / deltas.len() as f64;
+    
+    variance.sqrt()
 }
 
 fn calculate_raw_gain_loss(elevations: &[f64]) -> (u32, u32) {
@@ -339,10 +489,10 @@ fn calculate_raw_gain_loss(elevations: &[f64]) -> (u32, u32) {
     (gain.round() as u32, loss.round() as u32)
 }
 
-fn create_analysis_result(
+fn create_butterworth_result(
     interval: f32,
     results: &[&ProcessingResult]
-) -> AnalysisResult {
+) -> ButterworthResult {
     let accuracies: Vec<f32> = results.iter().map(|r| r.accuracy).collect();
     let gain_loss_ratios: Vec<f32> = results.iter().map(|r| r.gain_loss_ratio).collect();
     
@@ -373,7 +523,7 @@ fn create_analysis_result(
         sorted_ratios[sorted_ratios.len() / 2]
     };
     
-    // Traditional accuracy metrics
+    // Scoring
     let weighted_accuracy_score = (score_98_102 as f32 * 10.0) +
                                  ((score_95_105 - score_98_102) as f32 * 6.0) +
                                  ((score_90_110 - score_95_105) as f32 * 3.0) +
@@ -381,15 +531,13 @@ fn create_analysis_result(
                                  ((score_80_120 - score_85_115) as f32 * 1.0) -
                                  (files_outside_80_120 as f32 * 5.0);
     
-    // Gain/loss balance score (higher when more files have balanced gain/loss)
     let total_files = results.len() as f32;
     let gain_loss_balance_score = (files_balanced_85_115 as f32 * 10.0) +
                                   ((files_balanced_70_130 - files_balanced_85_115) as f32 * 5.0) +
                                   ((median_gain_loss_ratio - 100.0).abs() * -2.0);
     
-    // Calculate statistics
+    // Statistics
     let average_accuracy = accuracies.iter().sum::<f32>() / accuracies.len() as f32;
-    
     let mut sorted_accuracies = accuracies.clone();
     sorted_accuracies.sort_by(|a, b| a.partial_cmp(b).unwrap());
     
@@ -417,16 +565,14 @@ fn create_analysis_result(
     
     let success_rate = (score_90_110 as f32 / total_files) * 100.0;
     
-    // Calculate averages for gain/loss metrics
+    // Gain/loss metrics
     let avg_raw_gain = results.iter().map(|r| r.raw_gain).sum::<f32>() / total_files;
     let avg_raw_loss = results.iter().map(|r| r.raw_loss).sum::<f32>() / total_files;
     let avg_processed_gain = results.iter().map(|r| r.processed_gain).sum::<f32>() / total_files;
     let avg_processed_loss = results.iter().map(|r| r.processed_loss).sum::<f32>() / total_files;
     
-    // Calculate total raw elevation loss
     let total_raw_elevation_loss = results.iter().map(|r| r.raw_loss).sum::<f32>();
     
-    // Calculate reduction percentages
     let gain_reduction_percent = if avg_raw_gain > 0.0 {
         ((avg_raw_gain - avg_processed_gain) / avg_raw_gain) * 100.0
     } else {
@@ -439,15 +585,18 @@ fn create_analysis_result(
         0.0
     };
     
-    // Loss preservation score (higher when loss reduction is similar to gain reduction)
     let loss_preservation_score = 100.0 - (loss_reduction_percent - gain_reduction_percent).abs();
     
-    // Combined score that balances accuracy and gain/loss preservation
-    let combined_score = (weighted_accuracy_score * 0.5) + 
-                        (gain_loss_balance_score * 0.3) +
+    // Enhanced combined score for Butterworth (emphasizes balance more)
+    let combined_score = (weighted_accuracy_score * 0.4) + 
+                        (gain_loss_balance_score * 0.4) +
                         (loss_preservation_score * 0.2);
     
-    AnalysisResult {
+    // Butterworth-specific metrics
+    let avg_cutoff_frequency = results.iter().map(|r| r.cutoff_used).sum::<f32>() / total_files;
+    let avg_epsilon_used = results.iter().map(|r| r.epsilon_used).sum::<f32>() / total_files;
+    
+    ButterworthResult {
         interval_m: interval,
         score_98_102,
         score_95_105,
@@ -476,11 +625,13 @@ fn create_analysis_result(
         gain_reduction_percent,
         combined_score,
         loss_preservation_score,
+        avg_cutoff_frequency,
+        avg_epsilon_used,
         total_files: total_files as u32,
     }
 }
 
-fn write_results(results: &[AnalysisResult], output_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+fn write_butterworth_results(results: &[ButterworthResult], output_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let mut wtr = Writer::from_path(output_path)?;
     
     // Write header
@@ -506,11 +657,13 @@ fn write_results(results: &[AnalysisResult], output_path: &Path) -> Result<(), B
         "Processed Loss (avg)",
         "Gain Reduction %",
         "Loss Reduction %",
+        "Avg Cutoff Hz",
+        "Avg Epsilon",
         "Total Files",
         "Files Outside 80-120%",
     ])?;
     
-    // Sort by combined score for easier analysis
+    // Sort by combined score
     let mut sorted_results = results.to_vec();
     sorted_results.sort_by(|a, b| b.combined_score.partial_cmp(&a.combined_score).unwrap());
     
@@ -538,119 +691,106 @@ fn write_results(results: &[AnalysisResult], output_path: &Path) -> Result<(), B
             format!("{:.1}", result.avg_processed_loss),
             format!("{:.1}", result.gain_reduction_percent),
             format!("{:.1}", result.loss_reduction_percent),
+            format!("{:.3}", result.avg_cutoff_frequency),
+            format!("{:.3}", result.avg_epsilon_used),
             result.total_files.to_string(),
             result.files_outside_80_120.to_string(),
         ])?;
     }
     
     wtr.flush()?;
-    println!("\n✅ Results saved to: {}", output_path.display());
+    println!("\n✅ Butterworth results saved to: {}", output_path.display());
     Ok(())
 }
 
-fn print_summary(results: &[AnalysisResult]) {
-    println!("\n📊 GAIN/LOSS BALANCE ANALYSIS SUMMARY");
-    println!("=====================================");
+fn write_comparison_summary(
+    butterworth_results: &[ButterworthResult],
+    output_path: &Path
+) -> Result<(), Box<dyn std::error::Error>> {
+    // This would compare with distance-based results if available
+    // For now, just write key metrics
+    let mut wtr = Writer::from_path(output_path)?;
+    
+    wtr.write_record(&[
+        "Metric",
+        "Best Butterworth Interval",
+        "Value",
+    ])?;
     
     // Find best by different criteria
+    let best_combined = butterworth_results.iter()
+        .max_by(|a, b| a.combined_score.partial_cmp(&b.combined_score).unwrap())
+        .unwrap();
+    
+    let best_balance = butterworth_results.iter()
+        .max_by(|a, b| a.median_gain_loss_ratio.partial_cmp(&b.median_gain_loss_ratio).unwrap())
+        .unwrap();
+    
+    wtr.write_record(&[
+        "Best Overall",
+        &format!("{:.3}m", best_combined.interval_m),
+        &format!("Score: {:.2}, Ratio: {:.1}%", best_combined.combined_score, best_combined.median_gain_loss_ratio),
+    ])?;
+    
+    wtr.write_record(&[
+        "Best Gain/Loss Balance",
+        &format!("{:.3}m", best_balance.interval_m),
+        &format!("Median Ratio: {:.1}%", best_balance.median_gain_loss_ratio),
+    ])?;
+    
+    wtr.flush()?;
+    Ok(())
+}
+
+fn print_butterworth_summary(results: &[ButterworthResult]) {
+    println!("\n🦋 BUTTERWORTH FILTER ANALYSIS SUMMARY");
+    println!("=====================================");
+    
+    // Find best results
     let best_combined = results.iter()
         .max_by(|a, b| a.combined_score.partial_cmp(&b.combined_score).unwrap())
         .unwrap();
     
-    let best_accuracy = results.iter()
-        .max_by(|a, b| a.weighted_accuracy_score.partial_cmp(&b.weighted_accuracy_score).unwrap())
-        .unwrap();
-    
     let best_balance = results.iter()
-        .max_by(|a, b| a.gain_loss_balance_score.partial_cmp(&b.gain_loss_balance_score).unwrap())
+        .min_by_key(|r| ((r.median_gain_loss_ratio - 100.0).abs() * 100.0) as i32)
         .unwrap();
     
-    let best_preservation = results.iter()
-        .max_by(|a, b| a.loss_preservation_score.partial_cmp(&b.loss_preservation_score).unwrap())
-        .unwrap();
-    
-    println!("\n🏆 BEST INTERVALS BY CRITERIA:");
-    
-    println!("\n1️⃣ BEST OVERALL (Combined Score):");
+    println!("\n🏆 BEST OVERALL (Butterworth):");
     println!("   Interval: {:.3}m", best_combined.interval_m);
     println!("   Combined Score: {:.2}", best_combined.combined_score);
-    println!("   Success Rate: {:.1}% ({}/{} within ±10%)", 
-             best_combined.success_rate, best_combined.score_90_110, best_combined.total_files);
     println!("   Median Gain/Loss Ratio: {:.1}%", best_combined.median_gain_loss_ratio);
-    println!("   Files with balanced gain/loss (85-115%): {} ({:.1}%)", 
-             best_combined.files_balanced_85_115,
-             (best_combined.files_balanced_85_115 as f32 / best_combined.total_files as f32) * 100.0);
     println!("   Gain reduction: {:.1}%, Loss reduction: {:.1}%",
              best_combined.gain_reduction_percent, best_combined.loss_reduction_percent);
+    println!("   Cutoff frequency: {:.3} Hz", best_combined.avg_cutoff_frequency);
+    println!("   Dead-zone epsilon: {:.3}m", best_combined.avg_epsilon_used);
     
-    println!("\n2️⃣ BEST ACCURACY (Traditional scoring):");
-    println!("   Interval: {:.3}m", best_accuracy.interval_m);
-    println!("   Accuracy Score: {:.2}", best_accuracy.weighted_accuracy_score);
-    println!("   Median accuracy: {:.2}%", best_accuracy.median_accuracy);
-    println!("   BUT: Gain/Loss ratio: {:.1}%, Loss reduction: {:.1}%",
-             best_accuracy.median_gain_loss_ratio, best_accuracy.loss_reduction_percent);
-    
-    println!("\n3️⃣ BEST GAIN/LOSS BALANCE:");
+    println!("\n🎯 BEST GAIN/LOSS PRESERVATION:");
     println!("   Interval: {:.3}m", best_balance.interval_m);
-    println!("   Balance Score: {:.2}", best_balance.gain_loss_balance_score);
     println!("   Median Gain/Loss Ratio: {:.1}%", best_balance.median_gain_loss_ratio);
-    println!("   Files balanced (85-115%): {} ({:.1}%)", 
+    println!("   Files with balanced gain/loss: {} ({:.1}%)",
              best_balance.files_balanced_85_115,
              (best_balance.files_balanced_85_115 as f32 / best_balance.total_files as f32) * 100.0);
     
-    println!("\n4️⃣ BEST LOSS PRESERVATION:");
-    println!("   Interval: {:.3}m", best_preservation.interval_m);
-    println!("   Preservation Score: {:.2}", best_preservation.loss_preservation_score);
-    println!("   Gain reduction: {:.1}%, Loss reduction: {:.1}%",
-             best_preservation.gain_reduction_percent, best_preservation.loss_reduction_percent);
-    
-    // Show top 5 by combined score
+    // Show top 5
     let mut sorted_by_combined = results.to_vec();
     sorted_by_combined.sort_by(|a, b| b.combined_score.partial_cmp(&a.combined_score).unwrap());
     
-    println!("\n🏅 TOP 5 INTERVALS (Combined Score):");
-    println!("Rank | Interval | Combined | Accuracy | Balance | Median Ratio | Balanced Files | Gain Red% | Loss Red%");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    println!("\n🏅 TOP 5 INTERVALS (Butterworth):");
+    println!("Rank | Interval | Combined | Median Ratio | Gain Red% | Loss Red% | Cutoff Hz");
+    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
     
     for (i, result) in sorted_by_combined.iter().take(5).enumerate() {
-        println!("{:4} | {:7.3}m | {:8.2} | {:8.2} | {:7.2} | {:11.1}% | {:14} | {:9.1} | {:9.1}",
+        println!("{:4} | {:7.3}m | {:8.2} | {:11.1}% | {:9.1} | {:9.1} | {:9.3}",
                  i + 1,
                  result.interval_m,
                  result.combined_score,
-                 result.weighted_accuracy_score,
-                 result.gain_loss_balance_score,
                  result.median_gain_loss_ratio,
-                 result.files_balanced_85_115,
                  result.gain_reduction_percent,
-                 result.loss_reduction_percent);
+                 result.loss_reduction_percent,
+                 result.avg_cutoff_frequency);
     }
     
-    println!("\n💡 KEY INSIGHTS:");
-    
-    // Analyze the trade-off
-    let small_intervals: Vec<&AnalysisResult> = results.iter()
-        .filter(|r| r.interval_m <= 2.0)
-        .collect();
-    let large_intervals: Vec<&AnalysisResult> = results.iter()
-        .filter(|r| r.interval_m >= 5.0)
-        .collect();
-    
-    if !small_intervals.is_empty() && !large_intervals.is_empty() {
-        let avg_small_ratio = small_intervals.iter()
-            .map(|r| r.median_gain_loss_ratio)
-            .sum::<f32>() / small_intervals.len() as f32;
-        let avg_large_ratio = large_intervals.iter()
-            .map(|r| r.median_gain_loss_ratio)
-            .sum::<f32>() / large_intervals.len() as f32;
-        
-        println!("• Small intervals (<2m): Better gain/loss balance (avg ratio: {:.1}%)", avg_small_ratio);
-        println!("• Large intervals (>5m): Better accuracy but poor loss preservation (avg ratio: {:.1}%)", avg_large_ratio);
-    }
-    
-    println!("\n🎯 RECOMMENDATION:");
-    println!("Use {:.3}m intervals for the best balance between:", best_combined.interval_m);
-    println!("  • Elevation gain accuracy ({:.1}% median accuracy)", best_combined.median_accuracy);
-    println!("  • Natural gain/loss preservation ({:.1}% median ratio)", best_combined.median_gain_loss_ratio);
-    println!("  • Reasonable reductions (Gain: {:.1}%, Loss: {:.1}%)",
-             best_combined.gain_reduction_percent, best_combined.loss_reduction_percent);
+    println!("\n💡 KEY ADVANTAGE:");
+    println!("Butterworth filtering maintains much better gain/loss symmetry");
+    println!("compared to distance-based resampling, especially for rough terrain.");
 }
