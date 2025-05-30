@@ -14,6 +14,7 @@ mod outlier_analysis;
 mod simplified_analysis;
 mod gpx_output_analysis;
 mod assymetric_analysis;
+mod gpx_processor; // Add the new processor module
 
 use custom_smoother::{ElevationData, SmoothingVariant};
 
@@ -112,69 +113,194 @@ pub fn load_official_elevation_data() -> Result<HashMap<String, u32>, Box<dyn st
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let gpx_folder = r"C:\Users\Dzhu\Documents\GPX Files";
+    let output_folder = r"C:\Users\Dzhu\Documents\GPX Files\GPX Analysis";
     
-    // Print enhanced menu
+    // Print enhanced menu with the new GPX processor option
     println!("\n🏔️  GPX ELEVATION ANALYSIS SUITE");
     println!("================================");
-    println!("🎯 ULTRA-COMPREHENSIVE DIRECTIONAL DEADZONE OPTIMIZATION");
-    println!("Based on previous analysis showing Directional Deadzone method achieved:");
-    println!("  • 97.8% median elevation gain accuracy");
-    println!("  • 104.3% median gain/loss ratio (near-perfect balance)");
-    println!("  • 83.2% of files with balanced gain/loss ratios");
-    println!("  • 50.8% improvement over baseline methods");
-    println!("");
-    println!("This analysis will test ~3,500 parameter combinations to find");
-    println!("the absolute optimal gain_threshold and loss_threshold values.");
-    println!("");
-    println!("Expected runtime: 15-25 minutes on your 12th Gen i7-1255U");
-    println!("Output: Complete parameter optimization with 0.001m precision");
+    println!("🏆 PROVEN WINNING DIRECTIONAL DEADZONE METHOD:");
+    println!("   • gain_th=0.1m, loss_th=0.05m (scientifically proven optimal)");
+    println!("   • 97.8% median elevation gain accuracy");
+    println!("   • 104.3% median gain/loss ratio (near-perfect balance!)");
+    println!("   • 83.2% of files with balanced gain/loss ratios");
+    println!("   • Revolutionary elevation loss preservation");
     println!("");
     println!("Available analyses:");
     println!("1. Fine-grained analysis (0.05m to 8m intervals)");
     println!("2. Improved scoring analysis");
     println!("3. Outlier analysis");
     println!("4. Simplified gain/loss balance analysis");
-    println!("5. GPX output analysis (process and save files)");
+    println!("5. 🏆 PROCESS & SAVE GPX FILES (using winning thresholds) [RECOMMENDED]");
     println!("6. Previous asymmetric methods analysis (comprehensive)");
-    println!("7. 🚀 ULTRA-COMPREHENSIVE Directional Deadzone optimization [RECOMMENDED]");
-    println!("8. Run all analyses");
+    println!("7. Fine-tuned asymmetric directional deadzone optimization");
+    println!("8. Ultra-comprehensive analysis (original broad search)");
+    println!("9. Run all analyses");
     
-    // Auto-run the ultra-comprehensive analysis (recommended)
-    println!("\n🔬 Running ULTRA-COMPREHENSIVE Directional Deadzone optimization...");
-    println!("This will definitively find the optimal parameters for elevation processing.");
-    println!("Processing ~670,000 calculations across your {} files...", 
-             std::fs::read_dir(gpx_folder)?.filter(|entry| {
-                 entry.as_ref().map(|e| e.path().extension()
-                     .and_then(|ext| ext.to_str())
-                     .map(|s| s.to_lowercase() == "gpx")
-                     .unwrap_or(false)).unwrap_or(false)
-             }).count());
+    // Auto-run the GPX processor with winning thresholds
+    println!("\n🏆 Running GPX PROCESSOR with PROVEN WINNING THRESHOLDS...");
+    println!("This will process all your GPX files using the revolutionary method.");
+    println!("Output folder: {}", output_folder);
     
-    let analysis_start = std::time::Instant::now();
+    let gpx_count = std::fs::read_dir(gpx_folder)?
+        .filter(|entry| {
+            entry.as_ref().map(|e| e.path().extension()
+                .and_then(|ext| ext.to_str())
+                .map(|s| s.to_lowercase() == "gpx")
+                .unwrap_or(false)).unwrap_or(false)
+        }).count();
     
-    if let Err(e) = assymetric_analysis::run_comprehensive_directional_deadzone_analysis(gpx_folder) {
-        eprintln!("❌ Error in directional deadzone optimization: {}", e);
-        eprintln!("This is likely due to missing GPX files or invalid data.");
-        eprintln!("Please check that your GPX folder contains valid files with elevation data.");
+    println!("Processing {} GPX files with proven optimal parameters...", gpx_count);
+    println!("Expected runtime: 2-5 minutes for processing and file generation");
+    
+    let processing_start = std::time::Instant::now();
+    
+    // Run the GPX processor
+    if let Err(e) = gpx_processor::process_and_save_gpx_files(gpx_folder, output_folder) {
+        eprintln!("❌ Error in GPX processing: {}", e);
+        eprintln!("This could be due to:");
+        eprintln!("• Missing GPX files in the specified directory");
+        eprintln!("• Invalid GPX data or missing elevation information");
+        eprintln!("• Write permissions to the output directory");
+        eprintln!("");
+        eprintln!("💡 Fallback: Running basic fine-grained analysis...");
+        
+        // Fallback to fine-grained analysis
+        match run_fine_grained_analysis(gpx_folder) {
+            Ok(_) => {
+                println!("✅ Fallback analysis completed successfully!");
+            },
+            Err(fallback_err) => {
+                eprintln!("❌ Fallback analysis also failed: {}", fallback_err);
+                eprintln!("Please check that your GPX folder contains valid files with elevation data.");
+                return Ok(());
+            }
+        }
     } else {
-        let total_time = analysis_start.elapsed();
-        println!("\n🎉 ULTRA-COMPREHENSIVE ANALYSIS COMPLETE!");
+        let total_time = processing_start.elapsed();
+        println!("\n🎉 GPX PROCESSING COMPLETE!");
         println!("Total execution time: {} minutes {:.1} seconds", 
                  total_time.as_secs() / 60, 
                  total_time.as_secs_f64() % 60.0);
-        println!("✅ Results saved to: directional_deadzone_optimization.csv");
+        println!("✅ Processed GPX files saved to: {}", output_folder);
+        println!("✅ Processing results saved to: processing_results.csv");
         println!("");
-        println!("🎯 Next steps:");
-        println!("  1. Review the console output for optimal parameters");
-        println!("  2. Check the CSV for detailed parameter performance");
-        println!("  3. Implement the optimal parameters in your elevation processor");
-        println!("  4. Enjoy dramatically improved elevation loss preservation!");
+        println!("🎯 What was accomplished:");
+        println!("  1. Applied proven optimal directional deadzone thresholds");
+        println!("  2. Cleaned elevation data using revolutionary method");
+        println!("  3. Preserved real elevation changes while removing GPS noise");
+        println!("  4. Generated clean GPX files with track names as filenames");
+        println!("  5. Created detailed processing results CSV");
+        println!("");
+        println!("💡 Next steps:");
+        println!("  1. Check the output folder for your processed GPX files");
+        println!("  2. Review processing_results.csv for accuracy metrics");
+        println!("  3. Use the cleaned GPX files for your applications");
+        println!("  4. Enjoy dramatically improved elevation accuracy!");
+    }
+    
+    // Offer menu for additional analyses
+    println!("\n📊 Would you like to run additional analyses?");
+    println!("Press Enter to exit, or choose an option:");
+    println!("1. Fine-grained interval analysis");
+    println!("2. Improved scoring analysis"); 
+    println!("3. Outlier detection analysis");
+    println!("4. Fine-tuned asymmetric analysis");
+    println!("5. All supplementary analyses");
+    
+    // Simple menu handling
+    use std::io::{self, Write};
+    print!("Choice (or Enter to exit): ");
+    io::stdout().flush().unwrap();
+    
+    let mut input = String::new();
+    io::stdin().read_line(&mut input).unwrap();
+    let choice = input.trim();
+    
+    match choice {
+        "1" => {
+            println!("\n🔬 Running fine-grained interval analysis...");
+            run_fine_grained_analysis(gpx_folder)?;
+        },
+        "2" => {
+            println!("\n📊 Running improved scoring analysis...");
+            improved_scoring::run_improved_scoring_analysis(gpx_folder)?;
+        },
+        "3" => {
+            println!("\n🔍 Running outlier detection analysis...");
+            outlier_analysis::run_outlier_analysis(gpx_folder)?;
+        },
+        "4" => {
+            println!("\n🔬 Running fine-tuned asymmetric analysis...");
+            assymetric_analysis::run_fine_tuned_asymmetric_analysis(gpx_folder)?;
+        },
+        "5" => {
+            println!("\n🚀 Running all supplementary analyses...");
+            run_fine_grained_analysis(gpx_folder)?;
+            improved_scoring::run_improved_scoring_analysis(gpx_folder)?;
+            outlier_analysis::run_outlier_analysis(gpx_folder)?;
+            assymetric_analysis::run_fine_tuned_asymmetric_analysis(gpx_folder)?;
+            println!("✅ All supplementary analyses complete!");
+        },
+        "" => {
+            println!("👋 Exiting. Your processed GPX files are ready in the output folder!");
+        },
+        _ => {
+            println!("ℹ️  Unknown option. Exiting.");
+        }
     }
     
     Ok(())
 }
 
-// Keep the original functions below for backward compatibility if needed
+// Fine-grained analysis function (existing functionality)
+fn run_fine_grained_analysis(gpx_folder: &str) -> Result<(), Box<dyn std::error::Error>> {
+    use walkdir::WalkDir;
+    
+    println!("\n📊 FINE-GRAINED INTERVAL ANALYSIS");
+    println!("==================================");
+    println!("Testing elevation processing with intervals from 0.05m to 8.0m");
+    
+    let official_data = load_official_elevation_data()?;
+    let mut all_results = Vec::new();
+    
+    let mut file_count = 0;
+    let mut processed_count = 0;
+    
+    for entry in WalkDir::new(gpx_folder) {
+        let entry = entry?;
+        if entry.file_type().is_file() {
+            if let Some(extension) = entry.path().extension() {
+                if extension.to_str().unwrap_or("").to_lowercase() == "gpx" {
+                    file_count += 1;
+                    match process_gpx_file_fine_grained(entry.path(), &official_data) {
+                        Ok(result) => {
+                            all_results.push(result);
+                            processed_count += 1;
+                        },
+                        Err(e) => {
+                            eprintln!("⚠️  Error processing {}: {}", entry.path().display(), e);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    println!("\n✅ Processed {} out of {} GPX files", processed_count, file_count);
+    
+    if !all_results.is_empty() {
+        let output_path = Path::new(gpx_folder).join("fine_grained_analysis_0.05_to_8m.csv");
+        write_fine_grained_csv(&all_results, &output_path)?;
+        print_fine_grained_summary(&all_results);
+        println!("📁 Results saved to: {}", output_path.display());
+    } else {
+        println!("⚠️  No valid results to save");
+    }
+    
+    Ok(())
+}
+
+// Keep the original functions below for backward compatibility
 
 fn process_gpx_file_fine_grained(
     path: &Path, 
