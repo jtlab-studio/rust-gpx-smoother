@@ -19,6 +19,7 @@ mod incline_analyzer;
 mod gpx_processor;
 mod distbased_elevation_processor;
 mod two_pass_analysis;  // Add the new module
+mod precision_optimization_analysis;
 
 use custom_smoother::{ElevationData, SmoothingVariant};
 
@@ -202,6 +203,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
         _ => {
             println!("ℹ️  Unknown option. Exiting.");
+        },
+        "11" => {
+            println!("\n🎯 Running precision optimization analysis...");
+            precision_optimization_analysis::run_precision_optimization_analysis(gpx_folder)?;
         }
     }
     
