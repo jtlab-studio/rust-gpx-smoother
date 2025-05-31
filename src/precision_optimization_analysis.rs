@@ -327,7 +327,7 @@ fn process_distance_based_single_file(
     file_data: &GpxFileData,
     interval: f32
 ) -> SingleFileResult {
-    let (gain, loss) = apply_optimized_distance_based(&file_data.elevations, &file_data.distances, interval);
+    let (gain, loss) = apply_optimized_distance_based(&file_data.elevations, &file_data.distances, interval.into());
     
     let official_gain = file_data.official_gain as f32;
     let gain_accuracy = (gain / official_gain) * 100.0;
@@ -349,10 +349,10 @@ fn process_enhanced_twopass_single_file(
     loss_interval: f32
 ) -> SingleFileResult {
     // Use 3m for gain calculation
-    let (gain, _) = apply_optimized_distance_based(&file_data.elevations, &file_data.distances, gain_interval);
+    let (gain, _) = apply_optimized_distance_based(&file_data.elevations, &file_data.distances, gain_interval.into());
     
     // Use variable interval for loss calculation
-    let (_, loss) = apply_optimized_distance_based(&file_data.elevations, &file_data.distances, loss_interval);
+    let (_, loss) = apply_optimized_distance_based(&file_data.elevations, &file_data.distances, loss_interval.into());
     
     let official_gain = file_data.official_gain as f32;
     let gain_accuracy = (gain / official_gain) * 100.0;
@@ -395,7 +395,7 @@ fn apply_optimized_distance_based(
     interval: f64
 ) -> (f32, f32) {
     // Improved distance-based processing with precision optimizations
-    let (uniform_distances, uniform_elevations) = resample_to_uniform_distance_optimized(
+    let (_uniform_distances, uniform_elevations) = resample_to_uniform_distance_optimized(
         elevations, distances, interval
     );
     
@@ -848,16 +848,16 @@ fn print_precision_analysis(results: &[PrecisionResult]) {
     
     // Find best in each category
     let best_distance = sorted_results.iter()
-        .filter(|r| r.method_name.starts_with("DistBased"))
-        .next().unwrap();
+        .find(|r| r.method_name.starts_with("DistBased"))
+        .unwrap();
     
     let best_twopass = sorted_results.iter()
-        .filter(|r| r.method_name.starts_with("TwoPass"))
-        .next().unwrap();
+        .find(|r| r.method_name.starts_with("TwoPass"))
+        .unwrap();
     
     let best_savgol = sorted_results.iter()
-        .filter(|r| r.method_name.starts_with("SavGol"))
-        .next().unwrap();
+        .find(|r| r.method_name.starts_with("SavGol"))
+        .unwrap();
     
     println!("\n🏅 BEST IN EACH CATEGORY:");
     
@@ -961,8 +961,4 @@ fn print_precision_analysis(results: &[PrecisionResult]) {
              best_overall.files_within_2_percent);
     println!("4. This should achieve {:.1}% of files within ±5% accuracy", 
              (best_overall.files_within_5_percent as f32 / best_overall.total_files as f32) * 100.0);
-}
-
-pub fn run_precision_optimization_analysis(gpx_folder: &str) -> Result<(), Box<dyn std::error::Error>> {
-    run_precision_optimization_analysis(gpx_folder)
 }

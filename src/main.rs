@@ -118,7 +118,7 @@ pub fn load_official_elevation_data() -> Result<HashMap<String, u32>, Box<dyn st
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let gpx_folder = r"C:\Users\Dzhu\Documents\GPX Files";
-    let output_folder = r"C:\Users\Dzhu\Documents\GPX Files\GPX Analysis";
+    let _output_folder = r"C:\Users\Dzhu\Documents\GPX Files\GPX Analysis";
     
     // Print enhanced menu with the new analysis option
     println!("\n🏔️  GPX ELEVATION ANALYSIS SUITE");
@@ -141,6 +141,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("8. Hybrid analysis (Butterworth + Distance-based)");
     println!("9. Run all analyses");
     println!("10. 🔄 Two-Pass & Savitzky-Golay Comparison Analysis [NEW]");
+    println!("11. 🎯 Precision Optimization Analysis [NEW]");
     
     // Skip automatic GPX processing - go straight to menu
     
@@ -154,6 +155,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("5. Hybrid analysis (Butterworth + Distance-based)");
     println!("6. All supplementary analyses");
     println!("10. 🔄 Two-Pass & Savitzky-Golay Comparison [NEW]");
+    println!("11. 🎯 Precision Optimization Analysis [NEW]");
     
     // Simple menu handling
     use std::io::{self, Write};
@@ -198,15 +200,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("\n🔄 Running Two-Pass & Savitzky-Golay comparison...");
             two_pass_analysis::run_two_pass_analysis(gpx_folder)?;
         },
+        "11" => {
+            println!("\n🎯 Running precision optimization analysis...");
+            precision_optimization_analysis::run_precision_optimization_analysis(gpx_folder)?;
+        },
         "" => {
             println!("👋 Exiting. Your processed GPX files are ready in the output folder!");
         },
         _ => {
             println!("ℹ️  Unknown option. Exiting.");
-        },
-        "11" => {
-            println!("\n🎯 Running precision optimization analysis...");
-            precision_optimization_analysis::run_precision_optimization_analysis(gpx_folder)?;
         }
     }
     
