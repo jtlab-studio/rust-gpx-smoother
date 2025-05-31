@@ -367,7 +367,7 @@ fn fix_missing_opening_tag(content: &str) -> String {
     // Check if content starts with track data but missing GPX header
     if !repaired.contains("<?xml") && !repaired.contains("<gpx") {
         // Add minimal GPX structure around existing content
-        let header = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<gpx xmlns=\"http://www.topografix.com/GPX/1/1\" version=\"1.1\" creator=\"GPX-Repair\">\n  <metadata>\n    <n>Repaired Track</n>\n  </metadata>\n";
+        let header = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<gpx xmlns=\"http://www.topografix.com/GPX/1/1\" version=\"1.1\" creator=\"GPX-Repair\">\n  <metadata/>\n";
         let footer = "\n</gpx>";
         
         repaired = format!("{}{}{}", header, repaired, footer);
@@ -375,7 +375,7 @@ fn fix_missing_opening_tag(content: &str) -> String {
         // Has XML declaration but missing GPX tag
         if let Some(xml_end) = repaired.find("?>") {
             let after_xml = &repaired[xml_end + 2..];
-            let gpx_header = "\n<gpx xmlns=\"http://www.topografix.com/GPX/1/1\" version=\"1.1\" creator=\"GPX-Repair\">\n  <metadata>\n    <n>Repaired Track</n>\n  </metadata>\n";
+            let gpx_header = "\n<gpx xmlns=\"http://www.topografix.com/GPX/1/1\" version=\"1.1\" creator=\"GPX-Repair\">\n  <metadata/>\n";
             let footer = "\n</gpx>";
             
             repaired = format!("{}{}{}{}", &repaired[..xml_end + 2], gpx_header, after_xml, footer);
@@ -555,10 +555,10 @@ fn ensure_valid_track_structure(content: &str) -> String {
     let mut repaired = content.to_string();
     
     if !repaired.contains("<trk>") {
-        repaired = repaired.replace("</metadata>", "</metadata>\n  <trk>\n    <n>Imported Track</n>\n    <trkseg>");
+        repaired = repaired.replace("</metadata>", "</metadata>\n  <trk>\n    <trkseg>");
         repaired = repaired.replace("</gpx>", "    </trkseg>\n  </trk>\n</gpx>");
     } else if !repaired.contains("<trkseg>") {
-        repaired = repaired.replace("<trk>", "<trk>\n    <n>Imported Track</n>\n    <trkseg>");
+        repaired = repaired.replace("<trk>", "<trk>\n    <trkseg>");
         repaired = repaired.replace("</trk>", "    </trkseg>\n  </trk>");
     }
     
@@ -593,6 +593,22 @@ fn add_estimated_elevations(content: &str) -> String {
     }
     
     new_lines.join("\n")
+}
+
+/// Simple pseudo-random number generator for elevation estimation
+fn pseudo_random() -> f64 {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    use std::time::{SystemTime, UNIX_EPOCH};
+    
+    let mut hasher = DefaultHasher::new();
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .subsec_nanos();
+    nanos.hash(&mut hasher);
+    let hash = hasher.finish();
+    (hash as f64) / (u64::MAX as f64)
 }
 
 /// Extract track points manually using string parsing (for severely corrupted files)
@@ -790,14 +806,12 @@ fn create_minimal_gpx_from_points_preprocessor(points: &[(f64, f64, f64)]) -> Re
     
     let mut gpx_content = String::new();
     
-    // GPX header
+    // GPX header with proper schema-compliant structure
     gpx_content.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
     gpx_content.push_str("<gpx xmlns=\"http://www.topografix.com/GPX/1/1\" version=\"1.1\" creator=\"GPX-Repair\">\n");
-    gpx_content.push_str("  <metadata>\n");
-    gpx_content.push_str("    <n>Repaired Track</n>\n");
-    gpx_content.push_str("  </metadata>\n");
+    gpx_content.push_str("  <metadata/>\n");
     gpx_content.push_str("  <trk>\n");
-    gpx_content.push_str("    <n>Extracted Track</n>\n");
+    gpx_content.push_str("    <name>Extracted Track</name>\n");  // Use proper GPX element name
     gpx_content.push_str("    <trkseg>\n");
     
     // Add track points
@@ -814,19 +828,6 @@ fn create_minimal_gpx_from_points_preprocessor(points: &[(f64, f64, f64)]) -> Re
     gpx_content.push_str("</gpx>\n");
     
     Ok(gpx_content)
-}
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    use std::time::{SystemTime, UNIX_EPOCH};
-    
-    let mut hasher = DefaultHasher::new();
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .subsec_nanos();
-    nanos.hash(&mut hasher);
-    let hash = hasher.finish();
-    (hash as f64) / (u64::MAX as f64)
 }
 
 #[derive(Debug)]
