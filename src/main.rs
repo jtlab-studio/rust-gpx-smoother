@@ -22,7 +22,6 @@ mod two_pass_analysis;
 mod precision_optimization_analysis;
 mod corrected_elevation_analysis;
 mod focused_symmetric_analysis;  // NEW: Add the focused symmetric analysis
-mod ultimate_gpx_processor;      // NEW: Add the ultimate processor
 
 use custom_smoother::{ElevationData, SmoothingVariant};
 
@@ -147,7 +146,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("11. 🎯 Precision Optimization Analysis");
     println!("12. ✅ Corrected Elevation Analysis (Proper Scoring + Symmetric Fix)");
     println!("13. 🎯 Focused Symmetric Analysis (0.5m to 2.5m optimization) [NEW]");
-    println!("14. 🚀 ULTIMATE GPX PROCESSOR (Optimal 1.9m + Inclines + Clean Output) [ULTIMATE]");
     
     // Offer menu for additional analyses
     println!("\n📊 Choose an analysis to run:");
@@ -162,7 +160,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("11. 🎯 Precision Optimization Analysis");
     println!("12. ✅ Corrected Elevation Analysis (Fixed with Symmetric)");
     println!("13. 🎯 Focused Symmetric Analysis (HIGH-RESOLUTION 0.5-2.5m) [RECOMMENDED]");
-    println!("14. 🚀 ULTIMATE GPX PROCESSOR (1.9m + Inclines + Clean GPX Output) [ULTIMATE]");
     
     // Simple menu handling
     use std::io::{self, Write};
@@ -219,15 +216,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("\n🎯 Running focused symmetric analysis (0.5m to 2.5m optimization)...");
             focused_symmetric_analysis::run_focused_symmetric_analysis(gpx_folder)?;
         },
-        "14" => {
-            println!("\n🚀 Running ULTIMATE GPX PROCESSOR with optimal 1.9m method...");
-            ultimate_gpx_processor::run_ultimate_gpx_processor(gpx_folder)?;
-        },
         "" => {
             println!("👋 Exiting. Your processed GPX files are ready in the output folder!");
         },
         _ => {
-            println!("ℹ️  Unknown option. Choose a number from 1-14 or press Enter to exit.");
+            println!("ℹ️  Unknown option. Choose a number from 1-13 or press Enter to exit.");
         }
     }
     
