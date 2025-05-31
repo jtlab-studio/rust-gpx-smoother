@@ -18,8 +18,9 @@ mod hybrid_analysis;
 mod incline_analyzer;
 mod gpx_processor;
 mod distbased_elevation_processor;
-mod two_pass_analysis;  // Add the new module
+mod two_pass_analysis;
 mod precision_optimization_analysis;
+mod corrected_elevation_analysis;  // Add the new module
 
 use custom_smoother::{ElevationData, SmoothingVariant};
 
@@ -120,7 +121,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let gpx_folder = r"C:\Users\Dzhu\Documents\GPX Files";
     let _output_folder = r"C:\Users\Dzhu\Documents\GPX Files\GPX Analysis";
     
-    // Print enhanced menu with the new analysis option
+    // Print enhanced menu with all analysis options
     println!("\n🏔️  GPX ELEVATION ANALYSIS SUITE");
     println!("================================");
     println!("🏆 PROVEN WINNING DIRECTIONAL DEADZONE METHOD:");
@@ -140,13 +141,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("7. Fine-tuned asymmetric directional deadzone optimization");
     println!("8. Hybrid analysis (Butterworth + Distance-based)");
     println!("9. Run all analyses");
-    println!("10. 🔄 Two-Pass & Savitzky-Golay Comparison Analysis [NEW]");
-    println!("11. 🎯 Precision Optimization Analysis [NEW]");
-    
-    // Skip automatic GPX processing - go straight to menu
+    println!("10. 🔄 Two-Pass & Savitzky-Golay Comparison Analysis");
+    println!("11. 🎯 Precision Optimization Analysis");
+    println!("12. ✅ Corrected Elevation Analysis (Proper Scoring) [RECOMMENDED]");
     
     // Offer menu for additional analyses
-    println!("\n📊 Would you like to run additional analyses?");
+    println!("\n📊 Choose an analysis to run:");
     println!("Press Enter to exit, or choose an option:");
     println!("1. Fine-grained interval analysis");
     println!("2. Improved scoring analysis"); 
@@ -154,8 +154,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("4. Fine-tuned asymmetric analysis");
     println!("5. Hybrid analysis (Butterworth + Distance-based)");
     println!("6. All supplementary analyses");
-    println!("10. 🔄 Two-Pass & Savitzky-Golay Comparison [NEW]");
-    println!("11. 🎯 Precision Optimization Analysis [NEW]");
+    println!("10. 🔄 Two-Pass & Savitzky-Golay Comparison");
+    println!("11. 🎯 Precision Optimization Analysis");
+    println!("12. ✅ Corrected Elevation Analysis (Proper Scoring) [RECOMMENDED]");
     
     // Simple menu handling
     use std::io::{self, Write};
@@ -203,6 +204,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "11" => {
             println!("\n🎯 Running precision optimization analysis...");
             precision_optimization_analysis::run_precision_optimization_analysis(gpx_folder)?;
+        },
+        "12" => {
+            println!("\n✅ Running corrected elevation analysis with proper scoring...");
+            corrected_elevation_analysis::run_corrected_elevation_analysis(gpx_folder)?;
         },
         "" => {
             println!("👋 Exiting. Your processed GPX files are ready in the output folder!");
