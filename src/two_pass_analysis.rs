@@ -1,11 +1,14 @@
 /// TWO-PASS SMOOTHING AND SAVITZKY-GOLAY COMPARISON ANALYSIS
 /// 
-/// This module implements and compares three approaches:
-/// 1. Baseline: Your proven distance-based approach (as-is)
-/// 2. Two-Pass: Distance-based for gain + 15m distance-based for loss
-/// 3. Savitzky-Golay: Traditional signal processing filter
+/// This module implements and compares five approaches:
+/// 1. Baseline: Your proven distance-based approach (default)
+/// 2. DistBased-3m: Distance-based with 3m interval
+/// 3. DistBased-6.1m: Distance-based with 6.1m interval  
+/// 4. Two-Pass: Distance-based for gain + 15m distance-based for loss
+/// 5. Savitzky-Golay: Traditional signal processing filter
 /// 
 /// Scoring: Separate gain accuracy and loss accuracy (both vs official gain)
+/// Output: Detailed file-by-file CSV + summary comparison
 
 use std::path::Path;
 use std::collections::HashMap;
@@ -16,44 +19,44 @@ use std::sync::Arc;
 use crate::distbased_elevation_processor::DistBasedElevationProcessor;
 
 #[derive(Debug, Serialize, Clone)]
-pub struct ThreeMethodResult {
-    interval_m: f32,
+pub struct FileComparisonResult {
+    filename: String,
+    official_gain_m: u32,
     
-    // BASELINE: Your proven distance-based approach
+    // Baseline (default distance-based)
     baseline_gain_m: f32,
     baseline_loss_m: f32,
-    baseline_gain_accuracy: f32,     // vs official gain
-    baseline_loss_accuracy: f32,     // vs official gain (for comparison)
-    baseline_gain_score: f32,        // How many files within ±10% for gain
-    baseline_loss_score: f32,        // How many files within ±10% for loss
-    baseline_combined_score: f32,    // Combined gain + loss performance
+    baseline_gain_accuracy: f32,
+    baseline_loss_accuracy: f32,
     
-    // TWO-PASS: Distance-based gain + 15m distance-based loss
+    // Distance-based 3m
+    dist3m_gain_m: f32,
+    dist3m_loss_m: f32,
+    dist3m_gain_accuracy: f32,
+    dist3m_loss_accuracy: f32,
+    
+    // Distance-based 6.1m
+    dist61m_gain_m: f32,
+    dist61m_loss_m: f32,
+    dist61m_gain_accuracy: f32,
+    dist61m_loss_accuracy: f32,
+    
+    // Two-pass
     twopass_gain_m: f32,
     twopass_loss_m: f32,
     twopass_gain_accuracy: f32,
     twopass_loss_accuracy: f32,
-    twopass_gain_score: f32,
-    twopass_loss_score: f32,
-    twopass_combined_score: f32,
     
-    // SAVITZKY-GOLAY: Traditional signal processing
+    // Savitzky-Golay
     savgol_gain_m: f32,
     savgol_loss_m: f32,
     savgol_gain_accuracy: f32,
     savgol_loss_accuracy: f32,
-    savgol_gain_score: f32,
-    savgol_loss_score: f32,
-    savgol_combined_score: f32,
     
-    // Performance comparison
-    best_method_gain: String,        // Which method has best gain accuracy
-    best_method_loss: String,        // Which method has best loss accuracy
-    best_method_combined: String,    // Which method has best overall performance
-    
-    // File statistics
-    total_files: u32,
-    files_with_official_data: u32,
+    // Best method for this file
+    best_gain_method: String,
+    best_loss_method: String,
+    best_combined_method: String,
 }
 
 #[derive(Debug, Clone)]
@@ -66,11 +69,26 @@ struct GpxFileData {
 
 #[derive(Debug, Clone)]
 struct SingleFileResult {
-    // Baseline results
+    filename: String,
+    official_gain: u32,
+    
+    // Baseline results (default distance-based)
     baseline_gain: f32,
     baseline_loss: f32,
     baseline_gain_accuracy: f32,
     baseline_loss_accuracy: f32,
+    
+    // Distance-based 3m results
+    dist3m_gain: f32,
+    dist3m_loss: f32,
+    dist3m_gain_accuracy: f32,
+    dist3m_loss_accuracy: f32,
+    
+    // Distance-based 6.1m results
+    dist61m_gain: f32,
+    dist61m_loss: f32,
+    dist61m_gain_accuracy: f32,
+    dist61m_loss_accuracy: f32,
     
     // Two-pass results
     twopass_gain: f32,
@@ -83,8 +101,6 @@ struct SingleFileResult {
     savgol_loss: f32,
     savgol_gain_accuracy: f32,
     savgol_loss_accuracy: f32,
-    
-    official_gain: u32,
 }
 
 pub fn run_two_pass_analysis(gpx_folder: &str) -> Result<(), Box<dyn std::error::Error>> {
@@ -106,18 +122,24 @@ pub fn run_two_pass_analysis(gpx_folder: &str) -> Result<(), Box<dyn std::error:
         .collect();
     
     println!("🔄 Starting Baseline Distance-Based Analysis...");
+    println!("🔄 Starting Distance-Based 3m Analysis...");
+    println!("🔄 Starting Distance-Based 6.1m Analysis...");
     println!("🔄 Starting Two-Pass Smoothing Analysis...");
     println!("🔄 Starting Savitzky-Golay Filter Analysis...");
     
-    // Process with all three methods (silent)
-    let results = process_three_methods(&gpx_files_data, &files_with_elevation)?;
+    // Process with all five methods (silent)
+    let results = process_five_methods(&gpx_files_data, &files_with_elevation)?;
     
-    // Write results (silent)
-    let output_path = Path::new(gpx_folder).join("two_pass_savgol_comparison.csv");
-    write_three_method_results(&results, &output_path)?;
+    // Write detailed file comparison CSV
+    let file_comparison_path = Path::new(gpx_folder).join("detailed_file_comparison.csv");
+    write_file_comparison_csv(&results, &file_comparison_path)?;
+    
+    // Write summary results (silent)
+    let output_path = Path::new(gpx_folder).join("five_method_comparison.csv");
+    write_five_method_results(&results, &output_path)?;
     
     // Print summary
-    print_three_method_summary(&results);
+    print_five_method_summary(&results);
     
     Ok(())
 }
@@ -202,69 +224,35 @@ fn load_gpx_data(gpx_folder: &str) -> Result<(HashMap<String, GpxFileData>, Vec<
     Ok((gpx_data, valid_files))
 }
 
-fn process_three_methods(
+fn process_five_methods(
     gpx_data: &HashMap<String, GpxFileData>,
     valid_files: &[String]
-) -> Result<Vec<ThreeMethodResult>, Box<dyn std::error::Error>> {
-    // Test intervals from 1.0m to 8.0m in 0.25m increments
-    let intervals: Vec<f32> = (4..=32).map(|i| i as f32 * 0.25).collect();
-    
+) -> Result<Vec<SingleFileResult>, Box<dyn std::error::Error>> {
     let gpx_data_arc = Arc::new(gpx_data.clone());
     
-    // Create work items for parallel processing
-    let work_items: Vec<(f32, String)> = intervals.iter()
-        .flat_map(|&interval| {
-            valid_files.iter().map(move |file| (interval, file.clone()))
-        })
-        .collect();
-    
-    // Process all work items in parallel (silent)
-    let all_file_results: Vec<(f32, String, SingleFileResult)> = work_items
+    // Process all files with all five methods (silent)
+    let all_file_results: Vec<SingleFileResult> = valid_files
         .par_iter()
-        .filter_map(|(interval, filename)| {
+        .filter_map(|filename| {
             let gpx_data = Arc::clone(&gpx_data_arc);
             
             if let Some(file_data) = gpx_data.get(filename) {
                 if file_data.official_gain > 0 {
-                    let result = process_single_file_three_methods(file_data, *interval);
-                    return Some((*interval, filename.clone(), result));
+                    let result = process_single_file_five_methods(file_data);
+                    return Some(result);
                 }
             }
             None
         })
         .collect();
     
-    // Group results by interval
-    let mut interval_groups: HashMap<i32, Vec<SingleFileResult>> = HashMap::new();
-    
-    for (interval, _filename, file_result) in all_file_results {
-        let key = (interval * 100.0) as i32;
-        interval_groups.entry(key).or_insert_with(Vec::new).push(file_result);
-    }
-    
-    // Calculate aggregate metrics for each interval
-    let results: Vec<ThreeMethodResult> = intervals
-        .par_iter()
-        .filter_map(|&interval| {
-            let key = (interval * 100.0) as i32;
-            if let Some(file_results) = interval_groups.get(&key) {
-                Some(calculate_three_method_metrics(interval, file_results))
-            } else {
-                None
-            }
-        })
-        .collect();
-    
-    Ok(results)
+    Ok(all_file_results)
 }
 
-fn process_single_file_three_methods(
-    file_data: &GpxFileData,
-    interval: f32
-) -> SingleFileResult {
+fn process_single_file_five_methods(file_data: &GpxFileData) -> SingleFileResult {
     let official_gain = file_data.official_gain as f32;
     
-    // METHOD 1: BASELINE - Your proven distance-based approach
+    // METHOD 1: BASELINE - Your proven distance-based approach (default)
     let baseline_processor = DistBasedElevationProcessor::new(
         file_data.elevations.clone(),
         file_data.distances.clone()
@@ -274,29 +262,55 @@ fn process_single_file_three_methods(
     let baseline_gain_accuracy = (baseline_gain / official_gain) * 100.0;
     let baseline_loss_accuracy = (baseline_loss / official_gain) * 100.0;
     
-    // METHOD 2: TWO-PASS - Distance-based gain + 15m distance-based loss
-    let (twopass_gain, twopass_loss) = apply_two_pass_smoothing(
+    // METHOD 2: DISTANCE-BASED 3M - Use 3m interval processing
+    let (dist3m_gain, dist3m_loss) = apply_distance_based_custom_interval(
         &file_data.elevations, 
         &file_data.distances, 
-        interval
+        3.0
+    );
+    let dist3m_gain_accuracy = (dist3m_gain / official_gain) * 100.0;
+    let dist3m_loss_accuracy = (dist3m_loss / official_gain) * 100.0;
+    
+    // METHOD 3: DISTANCE-BASED 6.1M - Use 6.1m interval processing
+    let (dist61m_gain, dist61m_loss) = apply_distance_based_custom_interval(
+        &file_data.elevations, 
+        &file_data.distances, 
+        6.1
+    );
+    let dist61m_gain_accuracy = (dist61m_gain / official_gain) * 100.0;
+    let dist61m_loss_accuracy = (dist61m_loss / official_gain) * 100.0;
+    
+    // METHOD 4: TWO-PASS - Distance-based gain + 15m distance-based loss
+    let (twopass_gain, twopass_loss) = apply_two_pass_smoothing(
+        &file_data.elevations, 
+        &file_data.distances
     );
     let twopass_gain_accuracy = (twopass_gain / official_gain) * 100.0;
     let twopass_loss_accuracy = (twopass_loss / official_gain) * 100.0;
     
-    // METHOD 3: SAVITZKY-GOLAY - Traditional signal processing
+    // METHOD 5: SAVITZKY-GOLAY - Traditional signal processing
     let (savgol_gain, savgol_loss) = apply_savitzky_golay_filter(
         &file_data.elevations,
-        &file_data.distances,
-        interval
+        15.0  // Use 15-point window
     );
     let savgol_gain_accuracy = (savgol_gain / official_gain) * 100.0;
     let savgol_loss_accuracy = (savgol_loss / official_gain) * 100.0;
     
     SingleFileResult {
+        filename: file_data.filename.clone(),
+        official_gain: file_data.official_gain,
         baseline_gain,
         baseline_loss,
         baseline_gain_accuracy,
         baseline_loss_accuracy,
+        dist3m_gain,
+        dist3m_loss,
+        dist3m_gain_accuracy,
+        dist3m_loss_accuracy,
+        dist61m_gain,
+        dist61m_loss,
+        dist61m_gain_accuracy,
+        dist61m_loss_accuracy,
         twopass_gain,
         twopass_loss,
         twopass_gain_accuracy,
@@ -305,30 +319,79 @@ fn process_single_file_three_methods(
         savgol_loss,
         savgol_gain_accuracy,
         savgol_loss_accuracy,
-        official_gain: file_data.official_gain,
     }
+}
+
+fn apply_distance_based_custom_interval(
+    elevations: &[f64],
+    distances: &[f64],
+    interval: f64
+) -> (f32, f32) {
+    // Use the same approach as your custom_smoother with specified interval
+    let (_uniform_distances, uniform_elevations) = resample_to_uniform_distance(
+        elevations, distances, interval
+    );
+    
+    if uniform_elevations.is_empty() {
+        return (0.0, 0.0);
+    }
+    
+    // Apply median filter for spike removal
+    let median_smoothed = median_filter(&uniform_elevations, 3);
+    
+    // Apply Gaussian smoothing (adaptive window based on interval)
+    let window_size = ((150.0 / interval).round() as usize).max(5).min(30);
+    let gaussian_smoothed = gaussian_smooth(&median_smoothed, window_size);
+    
+    // Apply deadband filtering
+    let deadband_threshold = match interval {
+        x if x <= 3.0 => 1.5,
+        x if x <= 6.0 => 2.0,
+        _ => 2.5,
+    };
+    
+    let mut filtered_elevations = vec![gaussian_smoothed[0]];
+    let mut last_significant_elevation = gaussian_smoothed[0];
+    
+    for &elevation in gaussian_smoothed.iter().skip(1) {
+        let change = elevation - last_significant_elevation;
+        
+        if change.abs() >= deadband_threshold {
+            filtered_elevations.push(elevation);
+            last_significant_elevation = elevation;
+        } else {
+            filtered_elevations.push(last_significant_elevation);
+        }
+    }
+    
+    // Calculate gain and loss
+    let mut gain = 0.0;
+    let mut loss = 0.0;
+    
+    for window in filtered_elevations.windows(2) {
+        let change = window[1] - window[0];
+        if change > 0.0 {
+            gain += change;
+        } else {
+            loss += -change;
+        }
+    }
+    
+    (gain as f32, loss as f32)
 }
 
 fn apply_two_pass_smoothing(
     elevations: &[f64],
-    distances: &[f64],
-    gain_interval: f32
+    distances: &[f64]
 ) -> (f32, f32) {
-    // PASS 1: Process for elevation gain using specified interval
-    let mut gain_processor = DistBasedElevationProcessor::new(
+    // PASS 1: Process for elevation gain using standard distance-based approach
+    let gain_processor = DistBasedElevationProcessor::new(
         elevations.to_vec(),
         distances.to_vec()
     );
-    // Note: We'd need to modify DistBasedElevationProcessor to accept custom intervals
-    // For now, using the default implementation
     let processed_gain = gain_processor.get_total_elevation_gain() as f32;
     
     // PASS 2: Process for elevation loss using 15m interval
-    let mut loss_processor = DistBasedElevationProcessor::new(
-        elevations.to_vec(),
-        distances.to_vec()
-    );
-    // Apply 15m processing specifically for loss
     let processed_loss = apply_loss_specific_processing(elevations, distances, 15.0);
     
     (processed_gain, processed_loss)
@@ -340,10 +403,7 @@ fn apply_loss_specific_processing(
     interval: f64
 ) -> f32 {
     // Custom loss processing with specified interval
-    // This is a simplified version - you might want to integrate with your custom_smoother
-    
-    // Resample to uniform interval
-    let (uniform_distances, uniform_elevations) = resample_to_uniform_distance(
+    let (_uniform_distances, uniform_elevations) = resample_to_uniform_distance(
         elevations, distances, interval
     );
     
@@ -367,7 +427,6 @@ fn apply_loss_specific_processing(
 
 fn apply_savitzky_golay_filter(
     elevations: &[f64],
-    _distances: &[f64],
     window_size: f32
 ) -> (f32, f32) {
     // Simplified Savitzky-Golay implementation
@@ -421,7 +480,6 @@ fn savitzky_golay_smooth(data: &[f64], window: usize) -> Vec<f64> {
 
 fn generate_savgol_coefficients(window: usize) -> Vec<f64> {
     // Simplified Savitzky-Golay coefficients for 2nd order polynomial
-    // In practice, you'd calculate these using matrix operations
     let mut coeffs = vec![1.0; window];
     let center = window / 2;
     
@@ -539,186 +597,104 @@ fn gaussian_smooth(data: &[f64], window: usize) -> Vec<f64> {
     result
 }
 
-fn calculate_three_method_metrics(
-    interval: f32,
-    file_results: &[SingleFileResult]
-) -> ThreeMethodResult {
-    let total_files = file_results.len() as u32;
-    
-    // Calculate average metrics for each method
-    let avg_baseline_gain = file_results.iter().map(|r| r.baseline_gain).sum::<f32>() / total_files as f32;
-    let avg_baseline_loss = file_results.iter().map(|r| r.baseline_loss).sum::<f32>() / total_files as f32;
-    let avg_twopass_gain = file_results.iter().map(|r| r.twopass_gain).sum::<f32>() / total_files as f32;
-    let avg_twopass_loss = file_results.iter().map(|r| r.twopass_loss).sum::<f32>() / total_files as f32;
-    let avg_savgol_gain = file_results.iter().map(|r| r.savgol_gain).sum::<f32>() / total_files as f32;
-    let avg_savgol_loss = file_results.iter().map(|r| r.savgol_loss).sum::<f32>() / total_files as f32;
-    
-    // Calculate accuracy metrics
-    let baseline_gain_accuracies: Vec<f32> = file_results.iter().map(|r| r.baseline_gain_accuracy).collect();
-    let baseline_loss_accuracies: Vec<f32> = file_results.iter().map(|r| r.baseline_loss_accuracy).collect();
-    let twopass_gain_accuracies: Vec<f32> = file_results.iter().map(|r| r.twopass_gain_accuracy).collect();
-    let twopass_loss_accuracies: Vec<f32> = file_results.iter().map(|r| r.twopass_loss_accuracy).collect();
-    let savgol_gain_accuracies: Vec<f32> = file_results.iter().map(|r| r.savgol_gain_accuracy).collect();
-    let savgol_loss_accuracies: Vec<f32> = file_results.iter().map(|r| r.savgol_loss_accuracy).collect();
-    
-    // Calculate median accuracies
-    let baseline_gain_accuracy = calculate_median(&baseline_gain_accuracies);
-    let baseline_loss_accuracy = calculate_median(&baseline_loss_accuracies);
-    let twopass_gain_accuracy = calculate_median(&twopass_gain_accuracies);
-    let twopass_loss_accuracy = calculate_median(&twopass_loss_accuracies);
-    let savgol_gain_accuracy = calculate_median(&savgol_gain_accuracies);
-    let savgol_loss_accuracy = calculate_median(&savgol_loss_accuracies);
-    
-    // Calculate scores (files within ±10%)
-    let baseline_gain_score = baseline_gain_accuracies.iter()
-        .filter(|&&acc| acc >= 90.0 && acc <= 110.0).count() as f32;
-    let baseline_loss_score = baseline_loss_accuracies.iter()
-        .filter(|&&acc| acc >= 90.0 && acc <= 110.0).count() as f32;
-    let twopass_gain_score = twopass_gain_accuracies.iter()
-        .filter(|&&acc| acc >= 90.0 && acc <= 110.0).count() as f32;
-    let twopass_loss_score = twopass_loss_accuracies.iter()
-        .filter(|&&acc| acc >= 90.0 && acc <= 110.0).count() as f32;
-    let savgol_gain_score = savgol_gain_accuracies.iter()
-        .filter(|&&acc| acc >= 90.0 && acc <= 110.0).count() as f32;
-    let savgol_loss_score = savgol_loss_accuracies.iter()
-        .filter(|&&acc| acc >= 90.0 && acc <= 110.0).count() as f32;
-    
-    // Calculate combined scores
-    let baseline_combined_score = (baseline_gain_score + baseline_loss_score) / 2.0;
-    let twopass_combined_score = (twopass_gain_score + twopass_loss_score) / 2.0;
-    let savgol_combined_score = (savgol_gain_score + savgol_loss_score) / 2.0;
-    
-    // Determine best methods
-    let best_method_gain = if baseline_gain_accuracy >= twopass_gain_accuracy && baseline_gain_accuracy >= savgol_gain_accuracy {
-        "Baseline"
-    } else if twopass_gain_accuracy >= savgol_gain_accuracy {
-        "Two-Pass"
-    } else {
-        "Savitzky-Golay"
-    }.to_string();
-    
-    let best_method_loss = if baseline_loss_accuracy >= twopass_loss_accuracy && baseline_loss_accuracy >= savgol_loss_accuracy {
-        "Baseline"
-    } else if twopass_loss_accuracy >= savgol_loss_accuracy {
-        "Two-Pass"
-    } else {
-        "Savitzky-Golay"
-    }.to_string();
-    
-    let best_method_combined = if baseline_combined_score >= twopass_combined_score && baseline_combined_score >= savgol_combined_score {
-        "Baseline"
-    } else if twopass_combined_score >= savgol_combined_score {
-        "Two-Pass"
-    } else {
-        "Savitzky-Golay"
-    }.to_string();
-    
-    ThreeMethodResult {
-        interval_m: interval,
-        baseline_gain_m: avg_baseline_gain,
-        baseline_loss_m: avg_baseline_loss,
-        baseline_gain_accuracy,
-        baseline_loss_accuracy,
-        baseline_gain_score,
-        baseline_loss_score,
-        baseline_combined_score,
-        twopass_gain_m: avg_twopass_gain,
-        twopass_loss_m: avg_twopass_loss,
-        twopass_gain_accuracy,
-        twopass_loss_accuracy,
-        twopass_gain_score,
-        twopass_loss_score,
-        twopass_combined_score,
-        savgol_gain_m: avg_savgol_gain,
-        savgol_loss_m: avg_savgol_loss,
-        savgol_gain_accuracy,
-        savgol_loss_accuracy,
-        savgol_gain_score,
-        savgol_loss_score,
-        savgol_combined_score,
-        best_method_gain,
-        best_method_loss,
-        best_method_combined,
-        total_files,
-        files_with_official_data: total_files,
-    }
-}
-
-fn calculate_median(values: &[f32]) -> f32 {
-    if values.is_empty() { return 0.0; }
-    
-    let mut sorted = values.to_vec();
-    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    
-    if sorted.len() % 2 == 0 {
-        (sorted[sorted.len() / 2 - 1] + sorted[sorted.len() / 2]) / 2.0
-    } else {
-        sorted[sorted.len() / 2]
-    }
-}
-
-fn write_three_method_results(
-    results: &[ThreeMethodResult],
+fn write_file_comparison_csv(
+    results: &[SingleFileResult],
     output_path: &Path
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut wtr = Writer::from_path(output_path)?;
     
-    // Write header
+    // Write header with all methods
     wtr.write_record(&[
-        "Interval_m",
-        // Baseline
-        "Baseline_Gain_m", "Baseline_Loss_m", 
-        "Baseline_Gain_Accuracy_%", "Baseline_Loss_Accuracy_%",
-        "Baseline_Gain_Score", "Baseline_Loss_Score", "Baseline_Combined_Score",
-        // Two-Pass
-        "TwoPass_Gain_m", "TwoPass_Loss_m",
-        "TwoPass_Gain_Accuracy_%", "TwoPass_Loss_Accuracy_%", 
-        "TwoPass_Gain_Score", "TwoPass_Loss_Score", "TwoPass_Combined_Score",
+        "Filename", "Official_Gain_m",
+        // Baseline (default distance-based)
+        "Baseline_Gain_m", "Baseline_Loss_m", "Baseline_Gain_Acc_%", "Baseline_Loss_Acc_%",
+        // Distance-based 3m
+        "Dist3m_Gain_m", "Dist3m_Loss_m", "Dist3m_Gain_Acc_%", "Dist3m_Loss_Acc_%",
+        // Distance-based 6.1m  
+        "Dist61m_Gain_m", "Dist61m_Loss_m", "Dist61m_Gain_Acc_%", "Dist61m_Loss_Acc_%",
+        // Two-pass
+        "TwoPass_Gain_m", "TwoPass_Loss_m", "TwoPass_Gain_Acc_%", "TwoPass_Loss_Acc_%",
         // Savitzky-Golay
-        "SavGol_Gain_m", "SavGol_Loss_m",
-        "SavGol_Gain_Accuracy_%", "SavGol_Loss_Accuracy_%",
-        "SavGol_Gain_Score", "SavGol_Loss_Score", "SavGol_Combined_Score",
+        "SavGol_Gain_m", "SavGol_Loss_m", "SavGol_Gain_Acc_%", "SavGol_Loss_Acc_%",
         // Best methods
-        "Best_Method_Gain", "Best_Method_Loss", "Best_Method_Combined",
-        "Total_Files"
+        "Best_Gain_Method", "Best_Loss_Method", "Best_Combined_Method"
     ])?;
     
-    // Sort by baseline combined score
+    // Sort by filename for easier reading
     let mut sorted_results = results.to_vec();
-    sorted_results.sort_by(|a, b| b.baseline_combined_score.partial_cmp(&a.baseline_combined_score).unwrap());
+    sorted_results.sort_by(|a, b| a.filename.cmp(&b.filename));
     
     for result in sorted_results {
+        // Determine best methods for this file
+        let gain_accuracies = [
+            ("Baseline", result.baseline_gain_accuracy),
+            ("Dist3m", result.dist3m_gain_accuracy),
+            ("Dist61m", result.dist61m_gain_accuracy),
+            ("TwoPass", result.twopass_gain_accuracy),
+            ("SavGol", result.savgol_gain_accuracy),
+        ];
+        
+        let loss_accuracies = [
+            ("Baseline", result.baseline_loss_accuracy),
+            ("Dist3m", result.dist3m_loss_accuracy),
+            ("Dist61m", result.dist61m_loss_accuracy),
+            ("TwoPass", result.twopass_loss_accuracy),
+            ("SavGol", result.savgol_loss_accuracy),
+        ];
+        
+        let best_gain = gain_accuracies.iter()
+            .min_by_key(|(_, acc)| ((acc - 100.0).abs() * 1000.0) as i32)
+            .unwrap().0;
+            
+        let best_loss = loss_accuracies.iter()
+            .min_by_key(|(_, acc)| ((acc - 100.0).abs() * 1000.0) as i32)
+            .unwrap().0;
+        
+        // Combined score (simple average of gain and loss accuracy distances from 100%)
+        let combined_scores = [
+            ("Baseline", (result.baseline_gain_accuracy - 100.0).abs() + (result.baseline_loss_accuracy - 100.0).abs()),
+            ("Dist3m", (result.dist3m_gain_accuracy - 100.0).abs() + (result.dist3m_loss_accuracy - 100.0).abs()),
+            ("Dist61m", (result.dist61m_gain_accuracy - 100.0).abs() + (result.dist61m_loss_accuracy - 100.0).abs()),
+            ("TwoPass", (result.twopass_gain_accuracy - 100.0).abs() + (result.twopass_loss_accuracy - 100.0).abs()),
+            ("SavGol", (result.savgol_gain_accuracy - 100.0).abs() + (result.savgol_loss_accuracy - 100.0).abs()),
+        ];
+        
+        let best_combined = combined_scores.iter()
+            .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
+            .unwrap().0;
+        
         wtr.write_record(&[
-            format!("{:.2}", result.interval_m),
+            &result.filename,
+            &result.official_gain.to_string(),
             // Baseline
-            format!("{:.1}", result.baseline_gain_m),
-            format!("{:.1}", result.baseline_loss_m),
-            format!("{:.1}", result.baseline_gain_accuracy),
-            format!("{:.1}", result.baseline_loss_accuracy),
-            format!("{:.0}", result.baseline_gain_score),
-            format!("{:.0}", result.baseline_loss_score),
-            format!("{:.1}", result.baseline_combined_score),
-            // Two-Pass
-            format!("{:.1}", result.twopass_gain_m),
-            format!("{:.1}", result.twopass_loss_m),
-            format!("{:.1}", result.twopass_gain_accuracy),
-            format!("{:.1}", result.twopass_loss_accuracy),
-            format!("{:.0}", result.twopass_gain_score),
-            format!("{:.0}", result.twopass_loss_score),
-            format!("{:.1}", result.twopass_combined_score),
-            // Savitzky-Golay
-            format!("{:.1}", result.savgol_gain_m),
-            format!("{:.1}", result.savgol_loss_m),
-            format!("{:.1}", result.savgol_gain_accuracy),
-            format!("{:.1}", result.savgol_loss_accuracy),
-            format!("{:.0}", result.savgol_gain_score),
-            format!("{:.0}", result.savgol_loss_score),
-            format!("{:.1}", result.savgol_combined_score),
+            &format!("{:.1}", result.baseline_gain),
+            &format!("{:.1}", result.baseline_loss),
+            &format!("{:.1}", result.baseline_gain_accuracy),
+            &format!("{:.1}", result.baseline_loss_accuracy),
+            // Dist3m
+            &format!("{:.1}", result.dist3m_gain),
+            &format!("{:.1}", result.dist3m_loss),
+            &format!("{:.1}", result.dist3m_gain_accuracy),
+            &format!("{:.1}", result.dist3m_loss_accuracy),
+            // Dist61m
+            &format!("{:.1}", result.dist61m_gain),
+            &format!("{:.1}", result.dist61m_loss),
+            &format!("{:.1}", result.dist61m_gain_accuracy),
+            &format!("{:.1}", result.dist61m_loss_accuracy),
+            // TwoPass
+            &format!("{:.1}", result.twopass_gain),
+            &format!("{:.1}", result.twopass_loss),
+            &format!("{:.1}", result.twopass_gain_accuracy),
+            &format!("{:.1}", result.twopass_loss_accuracy),
+            // SavGol
+            &format!("{:.1}", result.savgol_gain),
+            &format!("{:.1}", result.savgol_loss),
+            &format!("{:.1}", result.savgol_gain_accuracy),
+            &format!("{:.1}", result.savgol_loss_accuracy),
             // Best methods
-            result.best_method_gain.clone(),
-            result.best_method_loss.clone(),
-            result.best_method_combined.clone(),
-            result.total_files.to_string(),
+            best_gain,
+            best_loss,
+            best_combined,
         ])?;
     }
     
@@ -726,114 +702,197 @@ fn write_three_method_results(
     Ok(())
 }
 
-fn print_three_method_summary(results: &[ThreeMethodResult]) {
-    println!("\n📊 THREE-METHOD COMPARISON RESULTS");
-    println!("===================================");
+fn write_five_method_results(
+    results: &[SingleFileResult],
+    output_path: &Path
+) -> Result<(), Box<dyn std::error::Error>> {
+    // This creates a summary CSV - the detailed one is in write_file_comparison_csv
+    let mut wtr = Writer::from_path(output_path)?;
     
-    // Find best overall results
-    let best_baseline = results.iter()
-        .max_by(|a, b| a.baseline_combined_score.partial_cmp(&b.baseline_combined_score).unwrap())
-        .unwrap();
-    let best_twopass = results.iter()
-        .max_by(|a, b| a.twopass_combined_score.partial_cmp(&b.twopass_combined_score).unwrap())
-        .unwrap();
-    let best_savgol = results.iter()
-        .max_by(|a, b| a.savgol_combined_score.partial_cmp(&b.savgol_combined_score).unwrap())
-        .unwrap();
+    wtr.write_record(&[
+        "Summary_Statistics",
+        "Baseline_Gain_Acc", "Baseline_Loss_Acc",
+        "Dist3m_Gain_Acc", "Dist3m_Loss_Acc", 
+        "Dist61m_Gain_Acc", "Dist61m_Loss_Acc",
+        "TwoPass_Gain_Acc", "TwoPass_Loss_Acc",
+        "SavGol_Gain_Acc", "SavGol_Loss_Acc"
+    ])?;
     
-    println!("\n🏆 BEST PERFORMANCE BY METHOD:");
-    println!("\n1️⃣ BASELINE (Distance-Based):");
-    println!("   Best interval: {:.2}m", best_baseline.interval_m);
-    println!("   Gain accuracy: {:.1}% | Loss accuracy: {:.1}%", 
-             best_baseline.baseline_gain_accuracy, best_baseline.baseline_loss_accuracy);
-    println!("   Files within ±10% - Gain: {:.0}/{} | Loss: {:.0}/{}", 
-             best_baseline.baseline_gain_score, best_baseline.total_files,
-             best_baseline.baseline_loss_score, best_baseline.total_files);
-    println!("   Combined score: {:.1}", best_baseline.baseline_combined_score);
+    let total_files = results.len() as f32;
     
-    println!("\n2️⃣ TWO-PASS (Gain + 15m Loss):");
-    println!("   Best interval: {:.2}m", best_twopass.interval_m);
-    println!("   Gain accuracy: {:.1}% | Loss accuracy: {:.1}%", 
-             best_twopass.twopass_gain_accuracy, best_twopass.twopass_loss_accuracy);
-    println!("   Files within ±10% - Gain: {:.0}/{} | Loss: {:.0}/{}", 
-             best_twopass.twopass_gain_score, best_twopass.total_files,
-             best_twopass.twopass_loss_score, best_twopass.total_files);
-    println!("   Combined score: {:.1}", best_twopass.twopass_combined_score);
+    // Calculate averages
+    let baseline_gain_avg = results.iter().map(|r| r.baseline_gain_accuracy).sum::<f32>() / total_files;
+    let baseline_loss_avg = results.iter().map(|r| r.baseline_loss_accuracy).sum::<f32>() / total_files;
+    let dist3m_gain_avg = results.iter().map(|r| r.dist3m_gain_accuracy).sum::<f32>() / total_files;
+    let dist3m_loss_avg = results.iter().map(|r| r.dist3m_loss_accuracy).sum::<f32>() / total_files;
+    let dist61m_gain_avg = results.iter().map(|r| r.dist61m_gain_accuracy).sum::<f32>() / total_files;
+    let dist61m_loss_avg = results.iter().map(|r| r.dist61m_loss_accuracy).sum::<f32>() / total_files;
+    let twopass_gain_avg = results.iter().map(|r| r.twopass_gain_accuracy).sum::<f32>() / total_files;
+    let twopass_loss_avg = results.iter().map(|r| r.twopass_loss_accuracy).sum::<f32>() / total_files;
+    let savgol_gain_avg = results.iter().map(|r| r.savgol_gain_accuracy).sum::<f32>() / total_files;
+    let savgol_loss_avg = results.iter().map(|r| r.savgol_loss_accuracy).sum::<f32>() / total_files;
     
-    println!("\n3️⃣ SAVITZKY-GOLAY (Signal Processing):");
-    println!("   Best interval: {:.2}m", best_savgol.interval_m);
-    println!("   Gain accuracy: {:.1}% | Loss accuracy: {:.1}%", 
-             best_savgol.savgol_gain_accuracy, best_savgol.savgol_loss_accuracy);
-    println!("   Files within ±10% - Gain: {:.0}/{} | Loss: {:.0}/{}", 
-             best_savgol.savgol_gain_score, best_savgol.total_files,
-             best_savgol.savgol_loss_score, best_savgol.total_files);
-    println!("   Combined score: {:.1}", best_savgol.savgol_combined_score);
+    wtr.write_record(&[
+        "Average_Accuracy_%",
+        &format!("{:.1}", baseline_gain_avg), &format!("{:.1}", baseline_loss_avg),
+        &format!("{:.1}", dist3m_gain_avg), &format!("{:.1}", dist3m_loss_avg),
+        &format!("{:.1}", dist61m_gain_avg), &format!("{:.1}", dist61m_loss_avg),
+        &format!("{:.1}", twopass_gain_avg), &format!("{:.1}", twopass_loss_avg),
+        &format!("{:.1}", savgol_gain_avg), &format!("{:.1}", savgol_loss_avg),
+    ])?;
     
-    // Overall winner
-    let overall_best = [
-        ("Baseline", best_baseline.baseline_combined_score),
-        ("Two-Pass", best_twopass.twopass_combined_score),
-        ("Savitzky-Golay", best_savgol.savgol_combined_score),
-    ].iter().max_by(|a, b| a.1.partial_cmp(&b.1).unwrap()).unwrap();
+    wtr.flush()?;
+    Ok(())
+}
+
+fn print_five_method_summary(results: &[SingleFileResult]) {
+    println!("\n📊 FIVE-METHOD COMPARISON RESULTS");
+    println!("==================================");
+    println!("Processed {} files with official elevation data\n", results.len());
     
-    println!("\n🥇 OVERALL WINNER: {} (Score: {:.1})", overall_best.0, overall_best.1);
+    // Calculate aggregate statistics for each method
+    let total_files = results.len() as f32;
     
-    // Method frequency analysis
-    let method_wins = results.iter().fold(HashMap::new(), |mut acc, r| {
-        *acc.entry(r.best_method_combined.clone()).or_insert(0) += 1;
-        acc
-    });
+    // Method 1: Baseline
+    let baseline_gain_acc = results.iter().map(|r| r.baseline_gain_accuracy).sum::<f32>() / total_files;
+    let baseline_loss_acc = results.iter().map(|r| r.baseline_loss_accuracy).sum::<f32>() / total_files;
+    let baseline_gain_within_10 = results.iter().filter(|r| (r.baseline_gain_accuracy - 100.0).abs() <= 10.0).count();
+    let baseline_loss_within_10 = results.iter().filter(|r| (r.baseline_loss_accuracy - 100.0).abs() <= 10.0).count();
     
-    println!("\n📈 METHOD WINS BY INTERVAL:");
-    for (method, count) in method_wins {
-        println!("   {}: {} intervals ({:.1}%)", 
-                 method, count, (count as f32 / results.len() as f32) * 100.0);
+    // Method 2: Distance-based 3m
+    let dist3m_gain_acc = results.iter().map(|r| r.dist3m_gain_accuracy).sum::<f32>() / total_files;
+    let dist3m_loss_acc = results.iter().map(|r| r.dist3m_loss_accuracy).sum::<f32>() / total_files;
+    let dist3m_gain_within_10 = results.iter().filter(|r| (r.dist3m_gain_accuracy - 100.0).abs() <= 10.0).count();
+    let dist3m_loss_within_10 = results.iter().filter(|r| (r.dist3m_loss_accuracy - 100.0).abs() <= 10.0).count();
+    
+    // Method 3: Distance-based 6.1m
+    let dist61m_gain_acc = results.iter().map(|r| r.dist61m_gain_accuracy).sum::<f32>() / total_files;
+    let dist61m_loss_acc = results.iter().map(|r| r.dist61m_loss_accuracy).sum::<f32>() / total_files;
+    let dist61m_gain_within_10 = results.iter().filter(|r| (r.dist61m_gain_accuracy - 100.0).abs() <= 10.0).count();
+    let dist61m_loss_within_10 = results.iter().filter(|r| (r.dist61m_loss_accuracy - 100.0).abs() <= 10.0).count();
+    
+    // Method 4: Two-Pass
+    let twopass_gain_acc = results.iter().map(|r| r.twopass_gain_accuracy).sum::<f32>() / total_files;
+    let twopass_loss_acc = results.iter().map(|r| r.twopass_loss_accuracy).sum::<f32>() / total_files;
+    let twopass_gain_within_10 = results.iter().filter(|r| (r.twopass_gain_accuracy - 100.0).abs() <= 10.0).count();
+    let twopass_loss_within_10 = results.iter().filter(|r| (r.twopass_loss_accuracy - 100.0).abs() <= 10.0).count();
+    
+    // Method 5: Savitzky-Golay
+    let savgol_gain_acc = results.iter().map(|r| r.savgol_gain_accuracy).sum::<f32>() / total_files;
+    let savgol_loss_acc = results.iter().map(|r| r.savgol_loss_accuracy).sum::<f32>() / total_files;
+    let savgol_gain_within_10 = results.iter().filter(|r| (r.savgol_gain_accuracy - 100.0).abs() <= 10.0).count();
+    let savgol_loss_within_10 = results.iter().filter(|r| (r.savgol_loss_accuracy - 100.0).abs() <= 10.0).count();
+    
+    println!("🏆 COMPARATIVE PERFORMANCE SUMMARY:");
+    println!("Method               | Gain Acc% | Loss Acc% | Gain ±10% | Loss ±10% | Combined Score");
+    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    println!("Baseline (Default)   | {:8.1} | {:8.1} | {:8}/{} | {:8}/{} | {:13.1}",
+             baseline_gain_acc, baseline_loss_acc, baseline_gain_within_10, total_files as usize,
+             baseline_loss_within_10, total_files as usize, 
+             (baseline_gain_within_10 + baseline_loss_within_10) as f32 / 2.0);
+    println!("Distance-Based 3m    | {:8.1} | {:8.1} | {:8}/{} | {:8}/{} | {:13.1}",
+             dist3m_gain_acc, dist3m_loss_acc, dist3m_gain_within_10, total_files as usize,
+             dist3m_loss_within_10, total_files as usize,
+             (dist3m_gain_within_10 + dist3m_loss_within_10) as f32 / 2.0);
+    println!("Distance-Based 6.1m  | {:8.1} | {:8.1} | {:8}/{} | {:8}/{} | {:13.1}",
+             dist61m_gain_acc, dist61m_loss_acc, dist61m_gain_within_10, total_files as usize,
+             dist61m_loss_within_10, total_files as usize,
+             (dist61m_gain_within_10 + dist61m_loss_within_10) as f32 / 2.0);
+    println!("Two-Pass Smoothing   | {:8.1} | {:8.1} | {:8}/{} | {:8}/{} | {:13.1}",
+             twopass_gain_acc, twopass_loss_acc, twopass_gain_within_10, total_files as usize,
+             twopass_loss_within_10, total_files as usize,
+             (twopass_gain_within_10 + twopass_loss_within_10) as f32 / 2.0);
+    println!("Savitzky-Golay       | {:8.1} | {:8.1} | {:8}/{} | {:8}/{} | {:13.1}",
+             savgol_gain_acc, savgol_loss_acc, savgol_gain_within_10, total_files as usize,
+             savgol_loss_within_10, total_files as usize,
+             (savgol_gain_within_10 + savgol_loss_within_10) as f32 / 2.0);
+    
+    // Overall winner analysis
+    let methods = [
+        ("Baseline", (baseline_gain_within_10 + baseline_loss_within_10) as f32 / 2.0),
+        ("Dist3m", (dist3m_gain_within_10 + dist3m_loss_within_10) as f32 / 2.0),
+        ("Dist61m", (dist61m_gain_within_10 + dist61m_loss_within_10) as f32 / 2.0),
+        ("Two-Pass", (twopass_gain_within_10 + twopass_loss_within_10) as f32 / 2.0),
+        ("Savitzky-Golay", (savgol_gain_within_10 + savgol_loss_within_10) as f32 / 2.0),
+    ];
+    
+    let overall_best = methods.iter().max_by(|a, b| a.1.partial_cmp(&b.1).unwrap()).unwrap();
+    
+    println!("\n🥇 OVERALL WINNER: {} (Combined Score: {:.1})", overall_best.0, overall_best.1);
+    
+    // Method wins analysis
+    let mut gain_wins = HashMap::new();
+    let mut loss_wins = HashMap::new();
+    let mut combined_wins = HashMap::new();
+    
+    for result in results {
+        // Best gain method for this file
+        let gain_methods = [
+            ("Baseline", result.baseline_gain_accuracy),
+            ("Dist3m", result.dist3m_gain_accuracy),
+            ("Dist61m", result.dist61m_gain_accuracy),
+            ("TwoPass", result.twopass_gain_accuracy),
+            ("SavGol", result.savgol_gain_accuracy),
+        ];
+        let best_gain = gain_methods.iter()
+            .min_by_key(|(_, acc)| ((acc - 100.0).abs() * 1000.0) as i32)
+            .unwrap().0;
+        *gain_wins.entry(best_gain).or_insert(0) += 1;
+        
+        // Best loss method for this file
+        let loss_methods = [
+            ("Baseline", result.baseline_loss_accuracy),
+            ("Dist3m", result.dist3m_loss_accuracy),
+            ("Dist61m", result.dist61m_loss_accuracy),
+            ("TwoPass", result.twopass_loss_accuracy),
+            ("SavGol", result.savgol_loss_accuracy),
+        ];
+        let best_loss = loss_methods.iter()
+            .min_by_key(|(_, acc)| ((acc - 100.0).abs() * 1000.0) as i32)
+            .unwrap().0;
+        *loss_wins.entry(best_loss).or_insert(0) += 1;
+        
+        // Best combined method
+        let combined_methods = [
+            ("Baseline", (result.baseline_gain_accuracy - 100.0).abs() + (result.baseline_loss_accuracy - 100.0).abs()),
+            ("Dist3m", (result.dist3m_gain_accuracy - 100.0).abs() + (result.dist3m_loss_accuracy - 100.0).abs()),
+            ("Dist61m", (result.dist61m_gain_accuracy - 100.0).abs() + (result.dist61m_loss_accuracy - 100.0).abs()),
+            ("TwoPass", (result.twopass_gain_accuracy - 100.0).abs() + (result.twopass_loss_accuracy - 100.0).abs()),
+            ("SavGol", (result.savgol_gain_accuracy - 100.0).abs() + (result.savgol_loss_accuracy - 100.0).abs()),
+        ];
+        let best_combined = combined_methods.iter()
+            .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
+            .unwrap().0;
+        *combined_wins.entry(best_combined).or_insert(0) += 1;
     }
     
-    // Detailed comparison at optimal intervals
-    println!("\n🔍 DETAILED COMPARISON (at each method's optimal interval):");
-    println!("Method      | Interval | Gain Acc% | Loss Acc% | Gain Score | Loss Score | Combined");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("Baseline    | {:7.2}m | {:8.1} | {:8.1} | {:9.0} | {:9.0} | {:8.1}",
-             best_baseline.interval_m, best_baseline.baseline_gain_accuracy, 
-             best_baseline.baseline_loss_accuracy, best_baseline.baseline_gain_score,
-             best_baseline.baseline_loss_score, best_baseline.baseline_combined_score);
-    println!("Two-Pass    | {:7.2}m | {:8.1} | {:8.1} | {:9.0} | {:9.0} | {:8.1}",
-             best_twopass.interval_m, best_twopass.twopass_gain_accuracy,
-             best_twopass.twopass_loss_accuracy, best_twopass.twopass_gain_score,
-             best_twopass.twopass_loss_score, best_twopass.twopass_combined_score);
-    println!("Savitzky-GL | {:7.2}m | {:8.1} | {:8.1} | {:9.0} | {:9.0} | {:8.1}",
-             best_savgol.interval_m, best_savgol.savgol_gain_accuracy,
-             best_savgol.savgol_loss_accuracy, best_savgol.savgol_gain_score,
-             best_savgol.savgol_loss_score, best_savgol.savgol_combined_score);
+    println!("\n📈 FILE-BY-FILE WINS:");
+    println!("GAIN accuracy wins:");
+    for (method, count) in gain_wins {
+        println!("   {}: {} files ({:.1}%)", method, count, (count as f32 / total_files) * 100.0);
+    }
+    
+    println!("LOSS accuracy wins:");
+    for (method, count) in loss_wins {
+        println!("   {}: {} files ({:.1}%)", method, count, (count as f32 / total_files) * 100.0);
+    }
+    
+    println!("COMBINED accuracy wins:");
+    for (method, count) in combined_wins {
+        println!("   {}: {} files ({:.1}%)", method, count, (count as f32 / total_files) * 100.0);
+    }
     
     println!("\n💡 KEY INSIGHTS:");
+    println!("• Distance-based 3m vs Default: Gain {:.1}% vs {:.1}%, Loss {:.1}% vs {:.1}%",
+             dist3m_gain_acc, baseline_gain_acc, dist3m_loss_acc, baseline_loss_acc);
+    println!("• Distance-based 6.1m vs Default: Gain {:.1}% vs {:.1}%, Loss {:.1}% vs {:.1}%",
+             dist61m_gain_acc, baseline_gain_acc, dist61m_loss_acc, baseline_loss_acc);
+    println!("• Two-Pass vs Default: Gain {:.1}% vs {:.1}%, Loss {:.1}% vs {:.1}%",
+             twopass_gain_acc, baseline_gain_acc, twopass_loss_acc, baseline_loss_acc);
+    println!("• Savitzky-Golay vs Default: Gain {:.1}% vs {:.1}%, Loss {:.1}% vs {:.1}%",
+             savgol_gain_acc, baseline_gain_acc, savgol_loss_acc, baseline_loss_acc);
     
-    // Calculate average improvements
-    let avg_baseline_gain_acc = results.iter().map(|r| r.baseline_gain_accuracy).sum::<f32>() / results.len() as f32;
-    let avg_twopass_gain_acc = results.iter().map(|r| r.twopass_gain_accuracy).sum::<f32>() / results.len() as f32;
-    let avg_savgol_gain_acc = results.iter().map(|r| r.savgol_gain_accuracy).sum::<f32>() / results.len() as f32;
-    
-    println!("• Average gain accuracy: Baseline {:.1}%, Two-Pass {:.1}%, Savitzky-Golay {:.1}%",
-             avg_baseline_gain_acc, avg_twopass_gain_acc, avg_savgol_gain_acc);
-    
-    if avg_twopass_gain_acc > avg_baseline_gain_acc {
-        println!("• Two-Pass shows {:.1}% improvement in gain accuracy over Baseline",
-                 avg_twopass_gain_acc - avg_baseline_gain_acc);
-    }
-    
-    if avg_savgol_gain_acc > avg_baseline_gain_acc {
-        println!("• Savitzky-Golay shows {:.1}% improvement in gain accuracy over Baseline",
-                 avg_savgol_gain_acc - avg_baseline_gain_acc);
-    }
-    
-    println!("\n🎯 RECOMMENDATION:");
-    match overall_best.0 {
-        "Baseline" => println!("Your proven distance-based approach remains the best overall method."),
-        "Two-Pass" => println!("Two-pass smoothing provides superior combined gain/loss accuracy."),
-        "Savitzky-Golay" => println!("Traditional signal processing offers the best performance."),
-        _ => println!("Results are too close to determine a clear winner."),
-    }
-    
-    println!("\n✅ Results saved to: two_pass_savgol_comparison.csv");
+    println!("\n✅ Results saved to:");
+    println!("   • detailed_file_comparison.csv (file-by-file results)");
+    println!("   • five_method_comparison.csv (summary statistics)");
 }
