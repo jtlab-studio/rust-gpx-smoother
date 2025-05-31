@@ -14,9 +14,10 @@ mod outlier_analysis;
 mod simplified_analysis;
 mod gpx_output_analysis;
 mod assymetric_analysis;
-mod hybrid_analysis;  // Add this line
-mod incline_analyzer; // Add this line
-mod gpx_processor;    // This was already there
+mod hybrid_analysis;
+mod incline_analyzer;
+mod gpx_processor;
+mod parameter_optimizer; // Add the optimizer module
 
 use custom_smoother::{ElevationData, SmoothingVariant};
 
@@ -43,22 +44,19 @@ struct GpxAnalysis {
     distbased_10m_accuracy_percent: f32,
 }
 
-// Separate struct for fine-grained analysis
 #[derive(Debug, Clone)]
 struct FineGrainedResult {
     filename: String,
     raw_distance_km: f32,
     raw_elevation_gain_m: u32,
     official_elevation_gain_m: u32,
-    interval_gains: Vec<(f32, u32)>, // (interval_m, gain_m)
-    interval_accuracies: Vec<(f32, f32)>, // (interval_m, accuracy_percent)
+    interval_gains: Vec<(f32, u32)>,
+    interval_accuracies: Vec<(f32, f32)>,
 }
 
-// Load official elevation data from CSV
 pub fn load_official_elevation_data() -> Result<HashMap<String, u32>, Box<dyn std::error::Error>> {
     let mut official_data = HashMap::new();
     
-    // Try to load from src folder first, then from current directory
     let csv_paths = vec![
         "src/official_elevation_data.csv",
         "official_elevation_data.csv",
@@ -93,7 +91,6 @@ pub fn load_official_elevation_data() -> Result<HashMap<String, u32>, Box<dyn st
     if !csv_loaded {
         println!("⚠️  No official elevation data CSV found, using built-in defaults");
         
-        // Fallback to built-in data
         let builtin_data = vec![
             ("berlin garmin.gpx", 73),
             ("bostonmarathon2024.gpx", 248),
@@ -102,7 +99,6 @@ pub fn load_official_elevation_data() -> Result<HashMap<String, u32>, Box<dyn st
             ("newyork2024.gpx", 247),
             ("valencia2022.gpx", 46),
             ("mainova-frankfurt-marathon 2023.gpx", 28),
-            // Add more as needed...
         ];
         
         for (filename, gain) in builtin_data {
@@ -117,7 +113,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let gpx_folder = r"C:\Users\Dzhu\Documents\GPX Files";
     let output_folder = r"C:\Users\Dzhu\Documents\GPX Files\GPX Analysis";
     
-    // Print enhanced menu with the new GPX processor option
+    // Enhanced menu with parameter optimization
     println!("\n🏔️  GPX ELEVATION ANALYSIS SUITE");
     println!("================================");
     println!("🏆 PROVEN WINNING DIRECTIONAL DEADZONE METHOD:");
@@ -137,6 +133,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("7. Fine-tuned asymmetric directional deadzone optimization");
     println!("8. Hybrid analysis (Butterworth + Distance-based)");
     println!("9. Run all analyses");
+    println!("10. 🎯 PARAMETER OPTIMIZATION (find perfect settings using official data) [NEW!]");
     
     // Auto-run the GPX processor with winning thresholds
     println!("\n🏆 Running GPX PROCESSOR with PROVEN WINNING THRESHOLDS...");
@@ -166,7 +163,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         eprintln!("");
         eprintln!("💡 Fallback: Running basic fine-grained analysis...");
         
-        // Fallback to fine-grained analysis
         match run_fine_grained_analysis(gpx_folder) {
             Ok(_) => {
                 println!("✅ Fallback analysis completed successfully!");
@@ -209,6 +205,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("4. Fine-tuned asymmetric analysis");
     println!("5. Hybrid analysis (Butterworth + Distance-based)");
     println!("6. All supplementary analyses");
+    println!("10. 🎯 PARAMETER OPTIMIZATION (find scientifically optimal settings)");
     
     // Simple menu handling
     use std::io::{self, Write};
@@ -248,6 +245,35 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             assymetric_analysis::run_fine_tuned_asymmetric_analysis(gpx_folder)?;
             hybrid_analysis::run_hybrid_analysis(gpx_folder)?;
             println!("✅ All supplementary analyses complete!");
+        },
+        "10" => {
+            println!("\n🎯 Running parameter optimization...");
+            println!("This will test thousands of parameter combinations to find the scientifically optimal settings.");
+            println!("Expected runtime: 5-15 minutes depending on your CPU.");
+            println!("");
+            
+            let opt_start = std::time::Instant::now();
+            match parameter_optimizer::run_parameter_optimization(output_folder) {
+                Ok(_) => {
+                    let opt_time = opt_start.elapsed();
+                    println!("\n🎉 PARAMETER OPTIMIZATION COMPLETE!");
+                    println!("Optimization time: {} minutes {:.1} seconds", 
+                             opt_time.as_secs() / 60, 
+                             opt_time.as_secs_f64() % 60.0);
+                    println!("✅ Optimal parameters found and saved to CSV");
+                    println!("✅ Copy the optimal parameters from the output above into your GPX processor");
+                    println!("");
+                    println!("💡 The optimization tested thousands of combinations to find:");
+                    println!("  • Perfect spike detection thresholds for each terrain type");
+                    println!("  • Optimal gain/loss deadzone thresholds");
+                    println!("  • Best gradient capping values");
+                    println!("  • Scientific validation using your official elevation data");
+                },
+                Err(e) => {
+                    eprintln!("❌ Parameter optimization failed: {}", e);
+                    eprintln!("This could be due to missing dependencies or insufficient data.");
+                }
+            }
         },
         "" => {
             println!("👋 Exiting. Your processed GPX files are ready in the output folder!");
@@ -307,8 +333,6 @@ fn run_fine_grained_analysis(gpx_folder: &str) -> Result<(), Box<dyn std::error:
     
     Ok(())
 }
-
-// Keep the original functions below for backward compatibility
 
 fn process_gpx_file_fine_grained(
     path: &Path, 
