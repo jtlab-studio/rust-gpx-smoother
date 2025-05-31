@@ -225,6 +225,41 @@ fn process_all_files_preprocessed(
     (results, errors)
 }
 
+fn process_all_files(
+    gpx_files: &[std::path::PathBuf], 
+    official_data: &HashMap<String, u32>
+) -> (Vec<SingleIntervalResult>, Vec<ProcessingError>) {
+    let mut results = Vec::new();
+    let mut errors = Vec::new();
+    
+    println!("🚀 Processing {} files with 1.9m symmetric method...", gpx_files.len());
+    
+    for (index, gpx_path) in gpx_files.iter().enumerate() {
+        let filename = gpx_path.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown")
+            .to_string();
+        
+        println!("🔄 Processing {}/{}: {}", index + 1, gpx_files.len(), filename);
+        
+        match process_single_file(gpx_path, official_data) {
+            Ok(result) => {
+                println!("   ✅ Success: {:.1}m gain ({:.1}% accuracy)", 
+                         result.processed_elevation_gain_m, 
+                         result.accuracy_percent);
+                results.push(result);
+            }
+            Err(e) => {
+                println!("   ❌ Error: {}", e);
+                let error = create_processing_error(gpx_path, &e.to_string());
+                errors.push(error);
+            }
+        }
+    }
+    
+    (results, errors)
+}
+
 fn process_single_file_preprocessed(
     gpx_path: &Path, 
     original_filename: &str,
@@ -350,39 +385,6 @@ fn process_single_file_preprocessed(
     };
     
     Ok(result)
-}
-    gpx_files: &[std::path::PathBuf], 
-    official_data: &HashMap<String, u32>
-) -> (Vec<SingleIntervalResult>, Vec<ProcessingError>) {
-    let mut results = Vec::new();
-    let mut errors = Vec::new();
-    
-    println!("🚀 Processing {} files with 1.9m symmetric method...", gpx_files.len());
-    
-    for (index, gpx_path) in gpx_files.iter().enumerate() {
-        let filename = gpx_path.file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("unknown")
-            .to_string();
-        
-        println!("🔄 Processing {}/{}: {}", index + 1, gpx_files.len(), filename);
-        
-        match process_single_file(gpx_path, official_data) {
-            Ok(result) => {
-                println!("   ✅ Success: {:.1}m gain ({:.1}% accuracy)", 
-                         result.processed_elevation_gain_m, 
-                         result.accuracy_percent);
-                results.push(result);
-            }
-            Err(e) => {
-                println!("   ❌ Error: {}", e);
-                let error = create_processing_error(gpx_path, &e.to_string());
-                errors.push(error);
-            }
-        }
-    }
-    
-    (results, errors)
 }
 
 fn process_single_file(
@@ -586,6 +588,55 @@ fn process_single_file(
     Ok(result)
 }
 
+fn calculate_raw_gain_loss(elevations: &[f64]) -> (f64, f64) {
+    if elevations.len() < 2 {
+        return (0.0, 0.0);
+    }
+    
+    let mut gain = 0.0;
+    let mut loss = 0.0;
+    
+    for window in elevations.windows(2) {
+        let change = window[1] - window[0];
+        
+        // Debug: Check if we're getting any elevation changes at all
+        if change.abs() > 0.001 { // Only count changes > 1mm to avoid floating point noise
+            if change > 0.0 {
+                gain += change;
+            } else {
+                loss += -change; // Make loss positive
+            }
+        }
+    }
+    
+    // Debug output for troubleshooting
+    if gain == 0.0 && loss == 0.0 && elevations.len() > 10 {
+        println!("   🔍 DEBUG: No elevation changes detected in {} points", elevations.len());
+        println!("      • First few elevations: {:?}", &elevations[..5.min(elevations.len())]);
+        println!("      • Last few elevations: {:?}", &elevations[elevations.len().saturating_sub(5)..]);
+        
+        // Check if all elevations are identical
+        let first_elevation = elevations[0];
+        let all_same = elevations.iter().all(|&e| (e - first_elevation).abs() < 0.001);
+        
+        if all_same {
+            println!("      • All elevations are identical: {:.1}m", first_elevation);
+        } else {
+            let min_ele = elevations.iter().fold(f64::INFINITY, |a, &b| a.min(b));
+            let max_ele = elevations.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
+            println!("      • Elevation range: {:.1}m to {:.1}m (diff: {:.1}m)", min_ele, max_ele, max_ele - min_ele);
+            
+            // Check if elevation changes are too small
+            let max_change = elevations.windows(2)
+                .map(|w| (w[1] - w[0]).abs())
+                .fold(0.0, f64::max);
+            println!("      • Largest elevation change between consecutive points: {:.6}m", max_change);
+        }
+    }
+    
+    (gain, loss)
+}
+
 /// Enhanced GPX reading with automatic repair for common issues
 fn read_gpx_with_repair(gpx_path: &Path) -> Result<Gpx, Box<dyn std::error::Error>> {
     // First, try to read the file normally
@@ -623,261 +674,6 @@ fn read_gpx_with_repair(gpx_path: &Path) -> Result<Gpx, Box<dyn std::error::Erro
             }
         }
     }
-}
-
-/// Aggressive repair attempt - extracts coordinates manually from corrupted files
-fn try_aggressive_repair_and_read_gpx(gpx_path: &Path, original_error: &str) -> Result<Gpx, Box<dyn std::error::Error>> {
-    // Read the raw file content
-    let mut file = File::open(gpx_path)?;
-    let mut content = String::new();
-    file.read_to_string(&mut content)?;
-    
-    println!("   🔧 Attempting to extract coordinates manually...");
-    
-    // Try to extract track points manually using string parsing
-    let track_points = extract_track_points_manually(&content)?;
-    
-    if track_points.is_empty() {
-        return Err("No valid track points found even with aggressive parsing".into());
-    }
-    
-    println!("   📍 Extracted {} track points manually", track_points.len());
-    
-    // Create a minimal valid GPX structure
-    let repaired_gpx = create_minimal_gpx_from_points(&track_points)?;
-    
-    // Try to parse the manually created GPX
-    let cursor = std::io::Cursor::new(repaired_gpx.as_bytes());
-    let reader = BufReader::new(cursor);
-    Ok(read(reader)?)
-}
-
-/// Extract track points manually using string parsing (for severely corrupted files)
-fn extract_track_points_manually(content: &str) -> Result<Vec<(f64, f64, f64)>, Box<dyn std::error::Error>> {
-    let mut points = Vec::new();
-    
-    // Look for patterns that might contain coordinates
-    let lines: Vec<&str> = content.lines().collect();
-    
-    for (i, line) in lines.iter().enumerate() {
-        // Try to extract lat/lon from trkpt tags
-        if line.contains("trkpt") || (line.contains("lat=") && line.contains("lon=")) {
-            if let Some((lat, lon)) = extract_lat_lon_from_line(line) {
-                // Look for elevation in the same line or next few lines
-                let elevation = find_elevation_near_line(&lines, i).unwrap_or_else(|| {
-                    // If no elevation found, estimate based on latitude
-                    estimate_elevation_from_latitude(lat)
-                });
-                points.push((lat, lon, elevation));
-            }
-        }
-        
-        // Also try to extract from any line that has decimal coordinates
-        else if line.contains('.') && (line.contains('-') || line.matches(char::is_numeric).count() > 5) {
-            if let Some((lat, lon)) = extract_coordinates_from_any_line(line) {
-                let elevation = find_elevation_near_line(&lines, i).unwrap_or_else(|| {
-                    estimate_elevation_from_latitude(lat)
-                });
-                points.push((lat, lon, elevation));
-            }
-        }
-    }
-    
-    // Remove duplicate points (within 0.0001 degrees)
-    points.dedup_by(|a, b| {
-        (a.0 - b.0).abs() < 0.0001 && (a.1 - b.1).abs() < 0.0001
-    });
-    
-    println!("   📍 Manual extraction found {} coordinate points", points.len());
-    
-    Ok(points)
-}
-
-/// Look for elevation data in the current line and nearby lines
-fn find_elevation_near_line(lines: &[&str], current_index: usize) -> Option<f64> {
-    // First check the current line
-    if let Some(ele) = extract_elevation_from_line(lines[current_index]) {
-        return Some(ele);
-    }
-    
-    // Check the next few lines (elevation often comes after coordinates)
-    for i in 1..=5 {
-        if current_index + i < lines.len() {
-            if let Some(ele) = extract_elevation_from_line(lines[current_index + i]) {
-                return Some(ele);
-            }
-        }
-    }
-    
-    // Check the previous few lines (in case elevation comes before coordinates)
-    for i in 1..=3 {
-        if current_index >= i {
-            if let Some(ele) = extract_elevation_from_line(lines[current_index - i]) {
-                return Some(ele);
-            }
-        }
-    }
-    
-    None
-}
-
-/// Estimate elevation based on latitude (very rough approximation)
-fn estimate_elevation_from_latitude(lat: f64) -> f64 {
-    // Very crude elevation estimation - you could make this more sophisticated
-    let abs_lat = lat.abs();
-    
-    // Rough approximation based on latitude zones
-    if abs_lat < 10.0 {
-        // Tropical/equatorial - generally lower elevation
-        50.0
-    } else if abs_lat < 30.0 {
-        // Subtropical - variable elevation
-        200.0
-    } else if abs_lat < 45.0 {
-        // Temperate - moderate elevation
-        400.0
-    } else if abs_lat < 60.0 {
-        // Higher latitude - often mountainous
-        600.0
-    } else {
-        // Arctic/Antarctic - variable but often coastal
-        100.0
-    }
-}
-
-fn extract_lat_lon_from_line(line: &str) -> Option<(f64, f64)> {
-    let mut lat = None;
-    let mut lon = None;
-    
-    // Look for lat="..." pattern
-    if let Some(lat_start) = line.find("lat=\"") {
-        if let Some(lat_end) = line[lat_start + 5..].find("\"") {
-            if let Ok(lat_val) = line[lat_start + 5..lat_start + 5 + lat_end].parse::<f64>() {
-                if lat_val >= -90.0 && lat_val <= 90.0 {
-                    lat = Some(lat_val);
-                }
-            }
-        }
-    }
-    
-    // Look for lon="..." pattern
-    if let Some(lon_start) = line.find("lon=\"") {
-        if let Some(lon_end) = line[lon_start + 5..].find("\"") {
-            if let Ok(lon_val) = line[lon_start + 5..lon_start + 5 + lon_end].parse::<f64>() {
-                if lon_val >= -180.0 && lon_val <= 180.0 {
-                    lon = Some(lon_val);
-                }
-            }
-        }
-    }
-    
-    match (lat, lon) {
-        (Some(lat_val), Some(lon_val)) => Some((lat_val, lon_val)),
-        _ => None,
-    }
-}
-
-fn extract_coordinates_from_any_line(line: &str) -> Option<(f64, f64)> {
-    // Try to find two decimal numbers that could be coordinates
-    let numbers: Vec<f64> = line
-        .split_whitespace()
-        .filter_map(|word| {
-            // Clean up the word and try to parse it
-            let cleaned = word.trim_matches(|c: char| !c.is_ascii_digit() && c != '.' && c != '-');
-            cleaned.parse::<f64>().ok()
-        })
-        .filter(|&num| {
-            // Filter for numbers that could be coordinates
-            (num >= -90.0 && num <= 90.0) || (num >= -180.0 && num <= 180.0)
-        })
-        .collect();
-    
-    if numbers.len() >= 2 {
-        let lat = numbers[0];
-        let lon = numbers[1];
-        
-        // Validate coordinate ranges
-        if lat >= -90.0 && lat <= 90.0 && lon >= -180.0 && lon <= 180.0 {
-            return Some((lat, lon));
-        }
-    }
-    
-    None
-}
-
-fn extract_elevation_from_line(line: &str) -> Option<f64> {
-    // Look for <ele>...</ele> pattern
-    if let Some(ele_start) = line.find("<ele>") {
-        if let Some(ele_end) = line[ele_start + 5..].find("</ele>") {
-            if let Ok(ele_val) = line[ele_start + 5..ele_start + 5 + ele_end].parse::<f64>() {
-                if ele_val >= -500.0 && ele_val <= 10000.0 { // Reasonable elevation range
-                    return Some(ele_val);
-                }
-            }
-        }
-    }
-    
-    // Look for ele="..." pattern
-    if let Some(ele_start) = line.find("ele=\"") {
-        if let Some(ele_end) = line[ele_start + 5..].find("\"") {
-            if let Ok(ele_val) = line[ele_start + 5..ele_start + 5 + ele_end].parse::<f64>() {
-                if ele_val >= -500.0 && ele_val <= 10000.0 {
-                    return Some(ele_val);
-                }
-            }
-        }
-    }
-    
-    // Look for elevation in other common formats
-    // Sometimes elevation appears as just a number after coordinates
-    let words: Vec<&str> = line.split_whitespace().collect();
-    for word in words {
-        // Try to parse any numeric word that could be elevation
-        if let Ok(num) = word.trim_matches(|c: char| !c.is_ascii_digit() && c != '.' && c != '-').parse::<f64>() {
-            if num >= -500.0 && num <= 10000.0 && num != 0.0 {
-                // Additional checks to avoid parsing coordinates as elevation
-                if !(num >= -180.0 && num <= 180.0 && num.fract() != 0.0) { // Not a coordinate
-                    return Some(num);
-                }
-            }
-        }
-    }
-    
-    None
-}
-
-/// Create a minimal valid GPX structure from extracted points
-fn create_minimal_gpx_from_points(points: &[(f64, f64, f64)]) -> Result<String, Box<dyn std::error::Error>> {
-    if points.is_empty() {
-        return Err("No points to create GPX from".into());
-    }
-    
-    let mut gpx_content = String::new();
-    
-    // GPX header
-    gpx_content.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
-    gpx_content.push_str("<gpx xmlns=\"http://www.topografix.com/GPX/1/1\" version=\"1.1\" creator=\"GPX-Repair\">\n");
-    gpx_content.push_str("  <metadata>\n");
-    gpx_content.push_str("    <name>Repaired Track</name>\n");
-    gpx_content.push_str("  </metadata>\n");
-    gpx_content.push_str("  <trk>\n");
-    gpx_content.push_str("    <name>Extracted Track</name>\n");
-    gpx_content.push_str("    <trkseg>\n");
-    
-    // Add track points
-    for (lat, lon, ele) in points {
-        gpx_content.push_str(&format!(
-            "      <trkpt lat=\"{:.6}\" lon=\"{:.6}\">\n        <ele>{:.1}</ele>\n      </trkpt>\n",
-            lat, lon, ele
-        ));
-    }
-    
-    // GPX footer
-    gpx_content.push_str("    </trkseg>\n");
-    gpx_content.push_str("  </trk>\n");
-    gpx_content.push_str("</gpx>\n");
-    
-    Ok(gpx_content)
 }
 
 fn try_read_gpx_normal(gpx_path: &Path) -> Result<Gpx, Box<dyn std::error::Error>> {
@@ -1127,7 +923,7 @@ fn add_missing_elevations(content: &str) -> String {
             new_lines.push(format!("{}  <ele>{:.1}</ele>", indent, elevation_counter));
             
             // Slightly vary elevation for next point
-            elevation_counter += (rand::random::<f64>() - 0.5) * 10.0;
+            elevation_counter += (pseudo_random() - 0.5) * 10.0;
         }
     }
     
@@ -1135,29 +931,23 @@ fn add_missing_elevations(content: &str) -> String {
 }
 
 // Simple random number generator to avoid external dependencies
-mod rand {
+fn pseudo_random() -> f64 {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
     use std::time::{SystemTime, UNIX_EPOCH};
     
-    pub fn random<T: From<f64>>() -> T {
-        let mut hasher = DefaultHasher::new();
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .subsec_nanos();
-        nanos.hash(&mut hasher);
-        let hash = hasher.finish();
-        T::from((hash as f64) / (u64::MAX as f64))
-    }
+    let mut hasher = DefaultHasher::new();
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .subsec_nanos();
+    nanos.hash(&mut hasher);
+    let hash = hasher.finish();
+    (hash as f64) / (u64::MAX as f64)
 }
 
 fn fix_invalid_coordinates(content: &str) -> String {
-    let mut repaired = content.to_string();
-    
-    // Simple coordinate validation - look for obvious invalid patterns
-    // Replace any coordinates outside valid ranges
-    let lines: Vec<&str> = repaired.lines().collect();
+    let lines: Vec<&str> = content.lines().collect();
     let mut new_lines = Vec::new();
     
     for line in lines {
@@ -1209,64 +999,270 @@ fn ensure_valid_track_structure(content: &str) -> String {
     // Ensure there's at least one track and track segment
     if !repaired.contains("<trk>") {
         // Add a basic track structure if completely missing
-        repaired = repaired.replace("</metadata>", "</metadata>\n  <trk>\n    <name>Imported Track</name>\n    <trkseg>");
+        repaired = repaired.replace("</metadata>", "</metadata>\n  <trk>\n    <n>Imported Track</n>\n    <trkseg>");
         repaired = repaired.replace("</gpx>", "    </trkseg>\n  </trk>\n</gpx>");
     } else if !repaired.contains("<trkseg>") {
         // Add track segment if missing
-        repaired = repaired.replace("<trk>", "<trk>\n    <name>Imported Track</name>\n    <trkseg>");
+        repaired = repaired.replace("<trk>", "<trk>\n    <n>Imported Track</n>\n    <trkseg>");
         repaired = repaired.replace("</trk>", "    </trkseg>\n  </trk>");
     }
     
     repaired
 }
 
-fn calculate_raw_gain_loss(elevations: &[f64]) -> (f64, f64) {
-    if elevations.len() < 2 {
-        return (0.0, 0.0);
+/// Aggressive repair attempt - extracts coordinates manually from corrupted files
+fn try_aggressive_repair_and_read_gpx(gpx_path: &Path, original_error: &str) -> Result<Gpx, Box<dyn std::error::Error>> {
+    // Read the raw file content
+    let mut file = File::open(gpx_path)?;
+    let mut content = String::new();
+    file.read_to_string(&mut content)?;
+    
+    println!("   🔧 Attempting to extract coordinates manually...");
+    
+    // Try to extract track points manually using string parsing
+    let track_points = extract_track_points_manually(&content)?;
+    
+    if track_points.is_empty() {
+        return Err("No valid track points found even with aggressive parsing".into());
     }
     
-    let mut gain = 0.0;
-    let mut loss = 0.0;
+    println!("   📍 Extracted {} track points manually", track_points.len());
     
-    for window in elevations.windows(2) {
-        let change = window[1] - window[0];
+    // Create a minimal valid GPX structure
+    let repaired_gpx = create_minimal_gpx_from_points(&track_points)?;
+    
+    // Try to parse the manually created GPX
+    let cursor = std::io::Cursor::new(repaired_gpx.as_bytes());
+    let reader = BufReader::new(cursor);
+    Ok(read(reader)?)
+}
+
+/// Extract track points manually using string parsing (for severely corrupted files)
+fn extract_track_points_manually(content: &str) -> Result<Vec<(f64, f64, f64)>, Box<dyn std::error::Error>> {
+    let mut points = Vec::new();
+    
+    // Look for patterns that might contain coordinates
+    let lines: Vec<&str> = content.lines().collect();
+    
+    for (i, line) in lines.iter().enumerate() {
+        // Try to extract lat/lon from trkpt tags
+        if line.contains("trkpt") || (line.contains("lat=") && line.contains("lon=")) {
+            if let Some((lat, lon)) = extract_lat_lon_from_line(line) {
+                // Look for elevation in the same line or next few lines
+                let elevation = find_elevation_near_line(&lines, i).unwrap_or_else(|| {
+                    // If no elevation found, estimate based on latitude
+                    estimate_elevation_from_latitude(lat)
+                });
+                points.push((lat, lon, elevation));
+            }
+        }
         
-        // Debug: Check if we're getting any elevation changes at all
-        if change.abs() > 0.001 { // Only count changes > 1mm to avoid floating point noise
-            if change > 0.0 {
-                gain += change;
-            } else {
-                loss += -change; // Make loss positive
+        // Also try to extract from any line that has decimal coordinates
+        else if line.contains('.') && (line.contains('-') || line.matches(char::is_numeric).count() > 5) {
+            if let Some((lat, lon)) = extract_coordinates_from_any_line(line) {
+                let elevation = find_elevation_near_line(&lines, i).unwrap_or_else(|| {
+                    estimate_elevation_from_latitude(lat)
+                });
+                points.push((lat, lon, elevation));
             }
         }
     }
     
-    // Debug output for troubleshooting
-    if gain == 0.0 && loss == 0.0 && elevations.len() > 10 {
-        println!("   🔍 DEBUG: No elevation changes detected in {} points", elevations.len());
-        println!("      • First few elevations: {:?}", &elevations[..5.min(elevations.len())]);
-        println!("      • Last few elevations: {:?}", &elevations[elevations.len().saturating_sub(5)..]);
-        
-        // Check if all elevations are identical
-        let first_elevation = elevations[0];
-        let all_same = elevations.iter().all(|&e| (e - first_elevation).abs() < 0.001);
-        
-        if all_same {
-            println!("      • All elevations are identical: {:.1}m", first_elevation);
-        } else {
-            let min_ele = elevations.iter().fold(f64::INFINITY, |a, &b| a.min(b));
-            let max_ele = elevations.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
-            println!("      • Elevation range: {:.1}m to {:.1}m (diff: {:.1}m)", min_ele, max_ele, max_ele - min_ele);
-            
-            // Check if elevation changes are too small
-            let max_change = elevations.windows(2)
-                .map(|w| (w[1] - w[0]).abs())
-                .fold(0.0, f64::max);
-            println!("      • Largest elevation change between consecutive points: {:.6}m", max_change);
+    // Remove duplicate points (within 0.0001 degrees)
+    points.dedup_by(|a, b| {
+        (a.0 - b.0).abs() < 0.0001 && (a.1 - b.1).abs() < 0.0001
+    });
+    
+    println!("   📍 Manual extraction found {} coordinate points", points.len());
+    
+    Ok(points)
+}
+
+/// Look for elevation data in the current line and nearby lines
+fn find_elevation_near_line(lines: &[&str], current_index: usize) -> Option<f64> {
+    // First check the current line
+    if let Some(ele) = extract_elevation_from_line(lines[current_index]) {
+        return Some(ele);
+    }
+    
+    // Check the next few lines (elevation often comes after coordinates)
+    for i in 1..=5 {
+        if current_index + i < lines.len() {
+            if let Some(ele) = extract_elevation_from_line(lines[current_index + i]) {
+                return Some(ele);
+            }
         }
     }
     
-    (gain, loss)
+    // Check the previous few lines (in case elevation comes before coordinates)
+    for i in 1..=3 {
+        if current_index >= i {
+            if let Some(ele) = extract_elevation_from_line(lines[current_index - i]) {
+                return Some(ele);
+            }
+        }
+    }
+    
+    None
+}
+
+/// Estimate elevation based on latitude (very rough approximation)
+fn estimate_elevation_from_latitude(lat: f64) -> f64 {
+    // Very crude elevation estimation - you could make this more sophisticated
+    let abs_lat = lat.abs();
+    
+    // Rough approximation based on latitude zones
+    if abs_lat < 10.0 {
+        // Tropical/equatorial - generally lower elevation
+        50.0
+    } else if abs_lat < 30.0 {
+        // Subtropical - variable elevation
+        200.0
+    } else if abs_lat < 45.0 {
+        // Temperate - moderate elevation
+        400.0
+    } else if abs_lat < 60.0 {
+        // Higher latitude - often mountainous
+        600.0
+    } else {
+        // Arctic/Antarctic - variable but often coastal
+        100.0
+    }
+}
+
+fn extract_lat_lon_from_line(line: &str) -> Option<(f64, f64)> {
+    let mut lat = None;
+    let mut lon = None;
+    
+    // Look for lat="..." pattern
+    if let Some(lat_start) = line.find("lat=\"") {
+        if let Some(lat_end) = line[lat_start + 5..].find("\"") {
+            if let Ok(lat_val) = line[lat_start + 5..lat_start + 5 + lat_end].parse::<f64>() {
+                if lat_val >= -90.0 && lat_val <= 90.0 {
+                    lat = Some(lat_val);
+                }
+            }
+        }
+    }
+    
+    // Look for lon="..." pattern
+    if let Some(lon_start) = line.find("lon=\"") {
+        if let Some(lon_end) = line[lon_start + 5..].find("\"") {
+            if let Ok(lon_val) = line[lon_start + 5..lon_start + 5 + lon_end].parse::<f64>() {
+                if lon_val >= -180.0 && lon_val <= 180.0 {
+                    lon = Some(lon_val);
+                }
+            }
+        }
+    }
+    
+    match (lat, lon) {
+        (Some(lat_val), Some(lon_val)) => Some((lat_val, lon_val)),
+        _ => None,
+    }
+}
+
+fn extract_coordinates_from_any_line(line: &str) -> Option<(f64, f64)> {
+    // Try to find two decimal numbers that could be coordinates
+    let numbers: Vec<f64> = line
+        .split_whitespace()
+        .filter_map(|word| {
+            // Clean up the word and try to parse it
+            let cleaned = word.trim_matches(|c: char| !c.is_ascii_digit() && c != '.' && c != '-');
+            cleaned.parse::<f64>().ok()
+        })
+        .filter(|&num| {
+            // Filter for numbers that could be coordinates
+            (num >= -90.0 && num <= 90.0) || (num >= -180.0 && num <= 180.0)
+        })
+        .collect();
+    
+    if numbers.len() >= 2 {
+        let lat = numbers[0];
+        let lon = numbers[1];
+        
+        // Validate coordinate ranges
+        if lat >= -90.0 && lat <= 90.0 && lon >= -180.0 && lon <= 180.0 {
+            return Some((lat, lon));
+        }
+    }
+    
+    None
+}
+
+fn extract_elevation_from_line(line: &str) -> Option<f64> {
+    // Look for <ele>...</ele> pattern
+    if let Some(ele_start) = line.find("<ele>") {
+        if let Some(ele_end) = line[ele_start + 5..].find("</ele>") {
+            if let Ok(ele_val) = line[ele_start + 5..ele_start + 5 + ele_end].parse::<f64>() {
+                if ele_val >= -500.0 && ele_val <= 10000.0 { // Reasonable elevation range
+                    return Some(ele_val);
+                }
+            }
+        }
+    }
+    
+    // Look for ele="..." pattern
+    if let Some(ele_start) = line.find("ele=\"") {
+        if let Some(ele_end) = line[ele_start + 5..].find("\"") {
+            if let Ok(ele_val) = line[ele_start + 5..ele_start + 5 + ele_end].parse::<f64>() {
+                if ele_val >= -500.0 && ele_val <= 10000.0 {
+                    return Some(ele_val);
+                }
+            }
+        }
+    }
+    
+    // Look for elevation in other common formats
+    // Sometimes elevation appears as just a number after coordinates
+    let words: Vec<&str> = line.split_whitespace().collect();
+    for word in words {
+        // Try to parse any numeric word that could be elevation
+        if let Ok(num) = word.trim_matches(|c: char| !c.is_ascii_digit() && c != '.' && c != '-').parse::<f64>() {
+            if num >= -500.0 && num <= 10000.0 && num != 0.0 {
+                // Additional checks to avoid parsing coordinates as elevation
+                if !(num >= -180.0 && num <= 180.0 && num.fract() != 0.0) { // Not a coordinate
+                    return Some(num);
+                }
+            }
+        }
+    }
+    
+    None
+}
+
+/// Create a minimal valid GPX structure from extracted points
+fn create_minimal_gpx_from_points(points: &[(f64, f64, f64)]) -> Result<String, Box<dyn std::error::Error>> {
+    if points.is_empty() {
+        return Err("No points to create GPX from".into());
+    }
+    
+    let mut gpx_content = String::new();
+    
+    // GPX header
+    gpx_content.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
+    gpx_content.push_str("<gpx xmlns=\"http://www.topografix.com/GPX/1/1\" version=\"1.1\" creator=\"GPX-Repair\">\n");
+    gpx_content.push_str("  <metadata>\n");
+    gpx_content.push_str("    <n>Repaired Track</n>\n");
+    gpx_content.push_str("  </metadata>\n");
+    gpx_content.push_str("  <trk>\n");
+    gpx_content.push_str("    <n>Extracted Track</n>\n");
+    gpx_content.push_str("    <trkseg>\n");
+    
+    // Add track points
+    for (lat, lon, ele) in points {
+        gpx_content.push_str(&format!(
+            "      <trkpt lat=\"{:.6}\" lon=\"{:.6}\">\n        <ele>{:.1}</ele>\n      </trkpt>\n",
+            lat, lon, ele
+        ));
+    }
+    
+    // GPX footer
+    gpx_content.push_str("    </trkseg>\n");
+    gpx_content.push_str("  </trk>\n");
+    gpx_content.push_str("</gpx>\n");
+    
+    Ok(gpx_content)
 }
 
 fn create_processing_error(gpx_path: &Path, error_message: &str) -> ProcessingError {

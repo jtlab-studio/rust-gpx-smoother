@@ -250,7 +250,7 @@ fn apply_comprehensive_gpx_repair(
     
     let error_lower = original_error.to_lowercase();
     
-    // Apply all repair strategies
+    // Apply all repair strategies in the same order as single_interval_analysis
     if error_lower.contains("no string content") {
         repaired_content = fix_no_string_content(&repaired_content);
         repairs_applied.push("CDATA_CLEANUP");
@@ -281,6 +281,13 @@ fn apply_comprehensive_gpx_repair(
         repair_details.push("Removed invalid XML characters");
     }
     
+    // NEW: Handle missing opening tag errors
+    if error_lower.contains("missing opening tag") {
+        repaired_content = fix_missing_opening_tag(&repaired_content);
+        repairs_applied.push("MISSING_OPENING_TAG");
+        repair_details.push("Reconstructed missing GPX opening tag");
+    }
+    
     // Always apply coordinate validation and structure fixes
     repaired_content = fix_invalid_coordinates(&repaired_content);
     repaired_content = ensure_valid_track_structure(&repaired_content);
@@ -296,19 +303,89 @@ fn apply_comprehensive_gpx_repair(
     }
     
     // Try to parse the repaired content
-    let cursor = std::io::Cursor::new(repaired_content.as_bytes());
+    match try_parse_repaired_content(&repaired_content) {
+        Ok(gpx) => {
+            let repairs_str = if repairs_applied.is_empty() {
+                "MINIMAL_CLEANUP".to_string()
+            } else {
+                repairs_applied.join(",")
+            };
+            
+            let details_str = repair_details.join("; ");
+            Ok((gpx, repairs_str, details_str))
+        }
+        Err(_) => {
+            // If standard repair fails, try aggressive repair
+            println!("   🔧 Standard repair failed, attempting aggressive reconstruction...");
+            try_aggressive_gpx_repair(input_path, &repaired_content, &mut repairs_applied, &mut repair_details)
+        }
+    }
+}
+
+fn try_parse_repaired_content(content: &str) -> Result<Gpx, Box<dyn std::error::Error>> {
+    let cursor = std::io::Cursor::new(content.as_bytes());
+    let reader = BufReader::new(cursor);
+    Ok(read(reader)?)
+}
+
+fn try_aggressive_gpx_repair(
+    input_path: &Path,
+    content: &str,
+    repairs_applied: &mut Vec<&str>,
+    repair_details: &mut Vec<&str>
+) -> Result<(Gpx, String, String), Box<dyn std::error::Error>> {
+    // Try to extract track points manually using string parsing
+    let track_points = extract_track_points_manually_preprocessor(content)?;
+    
+    if track_points.is_empty() {
+        return Err("No valid track points found even with aggressive parsing".into());
+    }
+    
+    println!("   📍 Extracted {} track points manually", track_points.len());
+    
+    // Create a minimal valid GPX structure
+    let repaired_gpx_content = create_minimal_gpx_from_points_preprocessor(&track_points)?;
+    
+    // Try to parse the manually created GPX
+    let cursor = std::io::Cursor::new(repaired_gpx_content.as_bytes());
     let reader = BufReader::new(cursor);
     let gpx = read(reader)?;
     
-    let repairs_str = if repairs_applied.is_empty() {
-        "MINIMAL_CLEANUP".to_string()
-    } else {
-        repairs_applied.join(",")
-    };
+    repairs_applied.push("AGGRESSIVE_RECONSTRUCTION");
+    repair_details.push("Completely reconstructed GPX from extracted coordinate data");
     
+    let repairs_str = repairs_applied.join(",");
     let details_str = repair_details.join("; ");
     
     Ok((gpx, repairs_str, details_str))
+}
+
+/// NEW: Fix missing opening tag errors
+fn fix_missing_opening_tag(content: &str) -> String {
+    let mut repaired = content.to_string();
+    
+    // Check if content starts with track data but missing GPX header
+    if !repaired.contains("<?xml") && !repaired.contains("<gpx") {
+        // Add minimal GPX structure around existing content
+        let header = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<gpx xmlns=\"http://www.topografix.com/GPX/1/1\" version=\"1.1\" creator=\"GPX-Repair\">\n  <metadata>\n    <n>Repaired Track</n>\n  </metadata>\n";
+        let footer = "\n</gpx>";
+        
+        repaired = format!("{}{}{}", header, repaired, footer);
+    } else if repaired.contains("<?xml") && !repaired.contains("<gpx") {
+        // Has XML declaration but missing GPX tag
+        if let Some(xml_end) = repaired.find("?>") {
+            let after_xml = &repaired[xml_end + 2..];
+            let gpx_header = "\n<gpx xmlns=\"http://www.topografix.com/GPX/1/1\" version=\"1.1\" creator=\"GPX-Repair\">\n  <metadata>\n    <n>Repaired Track</n>\n  </metadata>\n";
+            let footer = "\n</gpx>";
+            
+            repaired = format!("{}{}{}{}", &repaired[..xml_end + 2], gpx_header, after_xml, footer);
+        }
+    } else if !repaired.contains("<?xml") && repaired.contains("<gpx") {
+        // Has GPX tag but missing XML declaration
+        repaired = format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n{}", repaired);
+    }
+    
+    repaired
 }
 
 // Include all the repair functions from single_interval_analysis.rs
@@ -518,7 +595,226 @@ fn add_estimated_elevations(content: &str) -> String {
     new_lines.join("\n")
 }
 
-fn pseudo_random() -> f64 {
+/// Extract track points manually using string parsing (for severely corrupted files)
+fn extract_track_points_manually_preprocessor(content: &str) -> Result<Vec<(f64, f64, f64)>, Box<dyn std::error::Error>> {
+    let mut points = Vec::new();
+    
+    // Look for patterns that might contain coordinates
+    let lines: Vec<&str> = content.lines().collect();
+    
+    for (i, line) in lines.iter().enumerate() {
+        // Try to extract lat/lon from trkpt tags
+        if line.contains("trkpt") || (line.contains("lat=") && line.contains("lon=")) {
+            if let Some((lat, lon)) = extract_lat_lon_from_line_preprocessor(line) {
+                // Look for elevation in the same line or next few lines
+                let elevation = find_elevation_near_line_preprocessor(&lines, i).unwrap_or_else(|| {
+                    // If no elevation found, estimate based on latitude
+                    estimate_elevation_from_latitude_preprocessor(lat)
+                });
+                points.push((lat, lon, elevation));
+            }
+        }
+        
+        // Also try to extract from any line that has decimal coordinates
+        else if line.contains('.') && (line.contains('-') || line.matches(char::is_numeric).count() > 5) {
+            if let Some((lat, lon)) = extract_coordinates_from_any_line_preprocessor(line) {
+                let elevation = find_elevation_near_line_preprocessor(&lines, i).unwrap_or_else(|| {
+                    estimate_elevation_from_latitude_preprocessor(lat)
+                });
+                points.push((lat, lon, elevation));
+            }
+        }
+    }
+    
+    // Remove duplicate points (within 0.0001 degrees)
+    points.dedup_by(|a, b| {
+        (a.0 - b.0).abs() < 0.0001 && (a.1 - b.1).abs() < 0.0001
+    });
+    
+    println!("   📍 Manual extraction found {} coordinate points", points.len());
+    
+    Ok(points)
+}
+
+/// Look for elevation data in the current line and nearby lines
+fn find_elevation_near_line_preprocessor(lines: &[&str], current_index: usize) -> Option<f64> {
+    // First check the current line
+    if let Some(ele) = extract_elevation_from_line_preprocessor(lines[current_index]) {
+        return Some(ele);
+    }
+    
+    // Check the next few lines (elevation often comes after coordinates)
+    for i in 1..=5 {
+        if current_index + i < lines.len() {
+            if let Some(ele) = extract_elevation_from_line_preprocessor(lines[current_index + i]) {
+                return Some(ele);
+            }
+        }
+    }
+    
+    // Check the previous few lines (in case elevation comes before coordinates)
+    for i in 1..=3 {
+        if current_index >= i {
+            if let Some(ele) = extract_elevation_from_line_preprocessor(lines[current_index - i]) {
+                return Some(ele);
+            }
+        }
+    }
+    
+    None
+}
+
+/// Estimate elevation based on latitude (very rough approximation)
+fn estimate_elevation_from_latitude_preprocessor(lat: f64) -> f64 {
+    let abs_lat = lat.abs();
+    
+    // Rough approximation based on latitude zones
+    if abs_lat < 10.0 {
+        50.0
+    } else if abs_lat < 30.0 {
+        200.0
+    } else if abs_lat < 45.0 {
+        400.0
+    } else if abs_lat < 60.0 {
+        600.0
+    } else {
+        100.0
+    }
+}
+
+fn extract_lat_lon_from_line_preprocessor(line: &str) -> Option<(f64, f64)> {
+    let mut lat = None;
+    let mut lon = None;
+    
+    // Look for lat="..." pattern
+    if let Some(lat_start) = line.find("lat=\"") {
+        if let Some(lat_end) = line[lat_start + 5..].find("\"") {
+            if let Ok(lat_val) = line[lat_start + 5..lat_start + 5 + lat_end].parse::<f64>() {
+                if lat_val >= -90.0 && lat_val <= 90.0 {
+                    lat = Some(lat_val);
+                }
+            }
+        }
+    }
+    
+    // Look for lon="..." pattern
+    if let Some(lon_start) = line.find("lon=\"") {
+        if let Some(lon_end) = line[lon_start + 5..].find("\"") {
+            if let Ok(lon_val) = line[lon_start + 5..lon_start + 5 + lon_end].parse::<f64>() {
+                if lon_val >= -180.0 && lon_val <= 180.0 {
+                    lon = Some(lon_val);
+                }
+            }
+        }
+    }
+    
+    match (lat, lon) {
+        (Some(lat_val), Some(lon_val)) => Some((lat_val, lon_val)),
+        _ => None,
+    }
+}
+
+fn extract_coordinates_from_any_line_preprocessor(line: &str) -> Option<(f64, f64)> {
+    // Try to find two decimal numbers that could be coordinates
+    let numbers: Vec<f64> = line
+        .split_whitespace()
+        .filter_map(|word| {
+            // Clean up the word and try to parse it
+            let cleaned = word.trim_matches(|c: char| !c.is_ascii_digit() && c != '.' && c != '-');
+            cleaned.parse::<f64>().ok()
+        })
+        .filter(|&num| {
+            // Filter for numbers that could be coordinates
+            (num >= -90.0 && num <= 90.0) || (num >= -180.0 && num <= 180.0)
+        })
+        .collect();
+    
+    if numbers.len() >= 2 {
+        let lat = numbers[0];
+        let lon = numbers[1];
+        
+        // Validate coordinate ranges
+        if lat >= -90.0 && lat <= 90.0 && lon >= -180.0 && lon <= 180.0 {
+            return Some((lat, lon));
+        }
+    }
+    
+    None
+}
+
+fn extract_elevation_from_line_preprocessor(line: &str) -> Option<f64> {
+    // Look for <ele>...</ele> pattern
+    if let Some(ele_start) = line.find("<ele>") {
+        if let Some(ele_end) = line[ele_start + 5..].find("</ele>") {
+            if let Ok(ele_val) = line[ele_start + 5..ele_start + 5 + ele_end].parse::<f64>() {
+                if ele_val >= -500.0 && ele_val <= 10000.0 { // Reasonable elevation range
+                    return Some(ele_val);
+                }
+            }
+        }
+    }
+    
+    // Look for ele="..." pattern
+    if let Some(ele_start) = line.find("ele=\"") {
+        if let Some(ele_end) = line[ele_start + 5..].find("\"") {
+            if let Ok(ele_val) = line[ele_start + 5..ele_start + 5 + ele_end].parse::<f64>() {
+                if ele_val >= -500.0 && ele_val <= 10000.0 {
+                    return Some(ele_val);
+                }
+            }
+        }
+    }
+    
+    // Look for elevation in other common formats
+    let words: Vec<&str> = line.split_whitespace().collect();
+    for word in words {
+        // Try to parse any numeric word that could be elevation
+        if let Ok(num) = word.trim_matches(|c: char| !c.is_ascii_digit() && c != '.' && c != '-').parse::<f64>() {
+            if num >= -500.0 && num <= 10000.0 && num != 0.0 {
+                // Additional checks to avoid parsing coordinates as elevation
+                if !(num >= -180.0 && num <= 180.0 && num.fract() != 0.0) { // Not a coordinate
+                    return Some(num);
+                }
+            }
+        }
+    }
+    
+    None
+}
+
+/// Create a minimal valid GPX structure from extracted points
+fn create_minimal_gpx_from_points_preprocessor(points: &[(f64, f64, f64)]) -> Result<String, Box<dyn std::error::Error>> {
+    if points.is_empty() {
+        return Err("No points to create GPX from".into());
+    }
+    
+    let mut gpx_content = String::new();
+    
+    // GPX header
+    gpx_content.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
+    gpx_content.push_str("<gpx xmlns=\"http://www.topografix.com/GPX/1/1\" version=\"1.1\" creator=\"GPX-Repair\">\n");
+    gpx_content.push_str("  <metadata>\n");
+    gpx_content.push_str("    <n>Repaired Track</n>\n");
+    gpx_content.push_str("  </metadata>\n");
+    gpx_content.push_str("  <trk>\n");
+    gpx_content.push_str("    <n>Extracted Track</n>\n");
+    gpx_content.push_str("    <trkseg>\n");
+    
+    // Add track points
+    for (lat, lon, ele) in points {
+        gpx_content.push_str(&format!(
+            "      <trkpt lat=\"{:.6}\" lon=\"{:.6}\">\n        <ele>{:.1}</ele>\n      </trkpt>\n",
+            lat, lon, ele
+        ));
+    }
+    
+    // GPX footer
+    gpx_content.push_str("    </trkseg>\n");
+    gpx_content.push_str("  </trk>\n");
+    gpx_content.push_str("</gpx>\n");
+    
+    Ok(gpx_content)
+}
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
     use std::time::{SystemTime, UNIX_EPOCH};
