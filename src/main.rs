@@ -27,6 +27,7 @@ mod gpx_preprocessor;
 mod single_interval_analysis;
 mod gpx_preprocessing_diagnostic;    // NEW: Add the diagnostic module
 mod conservative_analysis;           // NEW: Add the conservative analysis module
+mod tolerant_gpx_reader;             // NEW: Add the tolerant GPX reader module
 
 use custom_smoother::{ElevationData, SmoothingVariant};
 
@@ -158,6 +159,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("15. 🔧 PREPROCESS GPX FILES: Clean and repair all GPX files [NEW]");
     println!("16. 🔍 DIAGNOSTIC: Compare Original vs Preprocessed Files [DO THIS FIRST]");
     println!("17. 🛡️  CONSERVATIVE ANALYSIS: Use Original Files When Possible [RECOMMENDED]");
+    println!("18. 🧪 TEST TOLERANT GPX READING: Like Garmin Connect [NEW - TEST FIRST]");
     
     // Offer menu for additional analyses
     println!("\n📊 Choose an analysis to run:");
@@ -176,6 +178,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("15. 🔧 Preprocess GPX Files (Clean & Repair) [NEW - RECOMMENDED FIRST STEP]");
     println!("16. 🔍 Preprocessing Diagnostic (Find Artificial Elevation) [CRITICAL - DO FIRST]");
     println!("17. 🛡️  Conservative Analysis (Original Files First) [RECOMMENDED FOR ACCURACY]");
+    println!("18. 🧪 Test Tolerant GPX Reading (Like Garmin Connect) [NEW - TEST APPROACH]");
     println!("debug. 🔍 DEBUG: Show what files are actually in your folders");
     
     // Simple menu handling
@@ -344,6 +347,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 conservative_analysis::run_conservative_analysis(gpx_folder, None)?;
             }
         },
+        "18" => {
+            println!("\n🧪 Testing tolerant GPX reading strategies...");
+            println!("🎯 This tests how well we can read GPX files like Garmin Connect does");
+            println!("   (tolerant of minor XML issues, no artificial elevation data)");
+            tolerant_gpx_reader::analyze_parsing_strategies(gpx_folder)?;
+        },
         "debug" => {
             println!("\n🔍 DEBUG: Checking folder contents...");
             
@@ -409,7 +418,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("👋 Exiting. Your processed GPX files are ready in the output folder!");
         },
         _ => {
-            println!("ℹ️  Unknown option. Choose a number from 1-17 or press Enter to exit.");
+            println!("ℹ️  Unknown option. Choose a number from 1-18 or press Enter to exit.");
         }
     }
     
