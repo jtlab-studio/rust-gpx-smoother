@@ -7,6 +7,7 @@ use csv::{Writer, Reader};
 use serde::{Serialize, Deserialize};
 use rayon::prelude::*;
 use std::collections::HashMap;
+use walkdir::WalkDir;
 
 mod custom_smoother;
 mod improved_scoring;
@@ -21,9 +22,11 @@ mod distbased_elevation_processor;
 mod two_pass_analysis;
 mod precision_optimization_analysis;
 mod corrected_elevation_analysis;
-mod focused_symmetric_analysis;  // NEW: Add the focused symmetric analysis
-mod gpx_preprocessor;          // NEW: Add the GPX preprocessor module
-mod single_interval_analysis;    // NEW: Add the single interval analysis
+mod focused_symmetric_analysis;
+mod gpx_preprocessor;
+mod single_interval_analysis;
+mod gpx_preprocessing_diagnostic;    // NEW: Add the diagnostic module
+mod conservative_analysis;           // NEW: Add the conservative analysis module
 
 use custom_smoother::{ElevationData, SmoothingVariant};
 
@@ -128,6 +131,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Print enhanced menu with all analysis options
     println!("\n🏔️  GPX ELEVATION ANALYSIS SUITE");
     println!("================================");
+    println!("🚨 CRITICAL: Run diagnostics first to check for artificial elevation inflation!");
+    println!("");
     println!("🏆 PROVEN WINNING SYMMETRIC DEADZONE METHOD:");
     println!("   • SymmetricFixed with optimal interval (scientifically proven)");
     println!("   • Eliminates loss under-estimation problem");
@@ -151,6 +156,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("13. 🎯 Focused Symmetric Analysis (0.5m to 2.5m optimization) [NEW]");
     println!("14. 🎯 SINGLE INTERVAL ANALYSIS: 1.9m Symmetric (File-by-File Details) [NEW]");
     println!("15. 🔧 PREPROCESS GPX FILES: Clean and repair all GPX files [NEW]");
+    println!("16. 🔍 DIAGNOSTIC: Compare Original vs Preprocessed Files [DO THIS FIRST]");
+    println!("17. 🛡️  CONSERVATIVE ANALYSIS: Use Original Files When Possible [RECOMMENDED]");
     
     // Offer menu for additional analyses
     println!("\n📊 Choose an analysis to run:");
@@ -167,6 +174,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("13. 🎯 Focused Symmetric Analysis (HIGH-RESOLUTION 0.5-2.5m) [RECOMMENDED]");
     println!("14. 🎯 1.9m Symmetric Analysis (Individual File Details) [NEW - RECOMMENDED]");
     println!("15. 🔧 Preprocess GPX Files (Clean & Repair) [NEW - RECOMMENDED FIRST STEP]");
+    println!("16. 🔍 Preprocessing Diagnostic (Find Artificial Elevation) [CRITICAL - DO FIRST]");
+    println!("17. 🛡️  Conservative Analysis (Original Files First) [RECOMMENDED FOR ACCURACY]");
+    println!("debug. 🔍 DEBUG: Show what files are actually in your folders");
     
     // Simple menu handling
     use std::io::{self, Write};
@@ -284,11 +294,122 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("\n🔧 Running GPX preprocessing (clean and repair)...");
             gpx_preprocessor::run_gpx_preprocessing(gpx_folder, preprocessed_folder)?;
         },
+        "16" => {
+            println!("\n🔍 Running preprocessing diagnostic to detect artificial elevation...");
+            
+            // Check if preprocessed folder exists
+            if !Path::new(preprocessed_folder).exists() {
+                println!("❌ Preprocessed folder not found: {}", preprocessed_folder);
+                println!("💡 Run option 15 first to create preprocessed files, then run this diagnostic.");
+                println!("   This diagnostic compares original vs preprocessed files to detect issues.");
+            } else {
+                println!("✅ Found preprocessed folder - running comparative analysis...");
+                println!("🎯 This will detect artificial elevation inflation and other preprocessing issues");
+                gpx_preprocessing_diagnostic::run_gpx_preprocessing_diagnostic(gpx_folder, preprocessed_folder)?;
+            }
+        },
+        "17" => {
+            println!("\n🛡️  Running conservative analysis (original files first)...");
+            
+            // Check if preprocessed folder exists and ask user which approach to take
+            if Path::new(preprocessed_folder).exists() {
+                println!("📂 Both original and preprocessed folders found:");
+                println!("   Original: {}", gpx_folder);
+                println!("   Preprocessed: {}", preprocessed_folder);
+                println!("");
+                println!("🛡️  CONSERVATIVE APPROACH: Try original files first, fallback to preprocessed");
+                println!("   This prevents artificial elevation inflation while handling broken files");
+                println!("   Results should match Garmin Connect and gpx.studio");
+                println!("");
+                print!("Include preprocessed folder as fallback? (Y/n): ");
+                io::stdout().flush().unwrap();
+                
+                let mut choice = String::new();
+                io::stdin().read_line(&mut choice).unwrap();
+                let use_fallback = choice.trim().to_lowercase();
+                
+                if use_fallback == "n" || use_fallback == "no" {
+                    println!("✅ Using original files only");
+                    println!("   This approach gives results closest to Garmin Connect");
+                    conservative_analysis::run_conservative_analysis(gpx_folder, None)?;
+                } else {
+                    println!("✅ Using original files with preprocessed fallback");
+                    println!("   Original files preferred, preprocessed only when necessary");
+                    conservative_analysis::run_conservative_analysis(gpx_folder, Some(preprocessed_folder))?;
+                }
+            } else {
+                println!("📁 Using original files only (no preprocessed folder found)");
+                println!("💡 This is often the best approach - most GPX files work fine without preprocessing");
+                println!("   Results should closely match Garmin Connect and gpx.studio");
+                conservative_analysis::run_conservative_analysis(gpx_folder, None)?;
+            }
+        },
+        "debug" => {
+            println!("\n🔍 DEBUG: Checking folder contents...");
+            
+            println!("\n📂 ORIGINAL FOLDER: {}", gpx_folder);
+            if Path::new(gpx_folder).exists() {
+                let mut original_files = Vec::new();
+                for entry in WalkDir::new(gpx_folder) {
+                    if let Ok(entry) = entry {
+                        if entry.file_type().is_file() {
+                            if let Some(extension) = entry.path().extension() {
+                                if extension.to_str().unwrap_or("").to_lowercase() == "gpx" {
+                                    if let Some(filename) = entry.file_name().to_str() {
+                                        original_files.push(filename.to_string());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                println!("   Found {} GPX files", original_files.len());
+                println!("   Sample files:");
+                for (i, file) in original_files.iter().take(10).enumerate() {
+                    println!("   {}. {}", i+1, file);
+                }
+                if original_files.len() > 10 {
+                    println!("   ... and {} more", original_files.len() - 10);
+                }
+            } else {
+                println!("   ❌ Folder does not exist!");
+            }
+            
+            println!("\n📁 PREPROCESSED FOLDER: {}", preprocessed_folder);
+            if Path::new(preprocessed_folder).exists() {
+                let mut preprocessed_files = Vec::new();
+                for entry in WalkDir::new(preprocessed_folder) {
+                    if let Ok(entry) = entry {
+                        if entry.file_type().is_file() {
+                            if let Some(extension) = entry.path().extension() {
+                                if extension.to_str().unwrap_or("").to_lowercase() == "gpx" {
+                                    if let Some(filename) = entry.file_name().to_str() {
+                                        preprocessed_files.push(filename.to_string());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                println!("   Found {} GPX files", preprocessed_files.len());
+                println!("   Sample files:");
+                for (i, file) in preprocessed_files.iter().take(10).enumerate() {
+                    println!("   {}. {}", i+1, file);
+                }
+                if preprocessed_files.len() > 10 {
+                    println!("   ... and {} more", preprocessed_files.len() - 10);
+                }
+            } else {
+                println!("   ❌ Folder does not exist!");
+            }
+        },
         "" => {
             println!("👋 Exiting. Your processed GPX files are ready in the output folder!");
         },
         _ => {
-            println!("ℹ️  Unknown option. Choose a number from 1-15 or press Enter to exit.");
+            println!("ℹ️  Unknown option. Choose a number from 1-17 or press Enter to exit.");
         }
     }
     
