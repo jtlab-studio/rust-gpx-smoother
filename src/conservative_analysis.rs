@@ -1,21 +1,23 @@
-/// CONSERVATIVE GPX ANALYSIS
+/// CONSERVATIVE GPX ANALYSIS WITH TOLERANT READING
 /// 
-/// Prioritizes using original GPX files and only falls back to preprocessed 
-/// versions when absolutely necessary. Prevents artificial elevation inflation.
+/// Prioritizes using original GPX files with tolerant reading (like Garmin Connect)
+/// and only falls back to preprocessed versions when absolutely necessary. 
+/// Prevents artificial elevation inflation while maximizing file compatibility.
 /// 
 /// Usage: Add this file to src/conservative_analysis.rs
 /// Then add to main.rs: mod conservative_analysis;
 
 use std::path::{Path, PathBuf};
-use std::fs::File;
-use std::io::{BufReader, Read};
 use std::collections::HashMap;
 use csv::Writer;
 use serde::Serialize;
-use gpx::{read, Gpx};
+use gpx::Gpx;
 use geo::{HaversineDistance, point};
 use walkdir::WalkDir;
 use crate::custom_smoother::{ElevationData, SmoothingVariant};
+
+// Import the tolerant GPX reader
+use crate::tolerant_gpx_reader::read_gpx_tolerantly;
 
 // Optimal interval from focused analysis
 const OPTIMAL_INTERVAL_M: f64 = 1.9;
@@ -86,9 +88,9 @@ pub fn run_conservative_analysis(
     preprocessed_folder: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     
-    println!("\n🛡️  CONSERVATIVE GPX ANALYSIS");
-    println!("============================");
-    println!("🎯 PRINCIPLE: Original files first, preprocessing only when necessary");
+    println!("\n🛡️  CONSERVATIVE GPX ANALYSIS WITH TOLERANT READING");
+    println!("===================================================");
+    println!("🎯 PRINCIPLE: Original files first with Garmin Connect-level tolerance");
     println!("📂 Primary source: {}", gpx_folder);
     if let Some(preprocessed) = preprocessed_folder {
         println!("📁 Fallback source: {}", preprocessed);
@@ -97,6 +99,8 @@ pub fn run_conservative_analysis(
     }
     println!("");
     println!("✅ ADVANTAGES:");
+    println!("   • Tolerant GPX reading like professional tools");
+    println!("   • Handles XML format issues without data distortion");
     println!("   • Prevents artificial elevation inflation");
     println!("   • Uses real elevation data when available");
     println!("   • Matches results from Garmin Connect/gpx.studio");
@@ -202,8 +206,8 @@ fn analyze_file_conservatively(
         .unwrap_or("unknown")
         .to_string();
     
-    // Step 1: Try original file first
-    println!("   📂 Attempting to read original file...");
+    // Step 1: Try original file first with tolerant reading
+    println!("   📂 Attempting to read original file with tolerant parser...");
     let (original_readable, original_error) = match try_analyze_gpx_file(original_path) {
         Ok((coords, warnings)) => {
             println!("   ✅ Original file readable - using original data");
@@ -222,7 +226,7 @@ fn analyze_file_conservatively(
             );
         }
         Err(e) => {
-            println!("   ⚠️  Original file failed: {}", e);
+            println!("   ⚠️  Original file failed with tolerant reading: {}", e);
             (false, e.to_string())
         }
     };
@@ -291,155 +295,17 @@ fn analyze_file_conservatively(
 }
 
 fn try_analyze_gpx_file(path: &Path) -> Result<(Vec<(f64, f64, f64)>, String), Box<dyn std::error::Error>> {
-    // First try normal reading
-    match try_read_gpx_normal(path) {
+    // Use the new tolerant GPX reading approach (like Garmin Connect)
+    match read_gpx_tolerantly(path) {
         Ok(gpx) => {
             let (coords, warnings) = extract_coordinates_from_gpx(&gpx)?;
             Ok((coords, warnings))
         }
-        Err(original_error) => {
-            // Try basic repair for common issues
-            println!("   🔧 Attempting basic GPX repair...");
-            match try_basic_gpx_repair(path, &original_error.to_string()) {
-                Ok(gpx) => {
-                    let (coords, mut warnings) = extract_coordinates_from_gpx(&gpx)?;
-                    warnings = if warnings.is_empty() {
-                        "File repaired successfully".to_string()
-                    } else {
-                        format!("File repaired; {}", warnings)
-                    };
-                    Ok((coords, warnings))
-                }
-                Err(_) => Err(original_error)
-            }
+        Err(e) => {
+            println!("   ❌ All tolerant reading strategies failed");
+            Err(e)
         }
     }
-}
-
-fn try_read_gpx_normal(path: &Path) -> Result<Gpx, Box<dyn std::error::Error>> {
-    let file = File::open(path)?;
-    let reader = BufReader::new(file);
-    Ok(read(reader)?)
-}
-
-fn try_basic_gpx_repair(path: &Path, original_error: &str) -> Result<Gpx, Box<dyn std::error::Error>> {
-    // Read raw content
-    let mut file = File::open(path)?;
-    let mut content = String::new();
-    file.read_to_string(&mut content)?;
-    
-    // Apply minimal, conservative repairs
-    let repaired_content = apply_basic_gpx_repairs(&content, original_error)?;
-    
-    // Try to parse the repaired content
-    let cursor = std::io::Cursor::new(repaired_content.as_bytes());
-    let reader = BufReader::new(cursor);
-    Ok(read(reader)?)
-}
-
-fn apply_basic_gpx_repairs(content: &str, error: &str) -> Result<String, Box<dyn std::error::Error>> {
-    let mut repaired = content.to_string();
-    let error_msg = error.to_lowercase();
-    
-    // Only apply minimal, safe repairs
-    
-    // Repair 1: Fix missing GPX version attribute
-    if error_msg.contains("lacks required attribute") && error_msg.contains("version") {
-        println!("   🔧 Adding missing GPX version attribute...");
-        repaired = fix_missing_gpx_version(&repaired);
-    }
-    
-    // Repair 2: Fix truncated XML files (safe repair)
-    if error_msg.contains("unexpected end") || error_msg.contains("premature") || !repaired.trim().ends_with("</gpx>") {
-        println!("   🔧 Closing unclosed XML tags...");
-        repaired = repair_truncated_xml(&repaired);
-    }
-    
-    // Repair 3: Fix coordinate boundary issues (metadata only)
-    if error_msg.contains("longitude") && (error_msg.contains("minimum") || error_msg.contains("maximum")) {
-        println!("   🔧 Removing problematic coordinate bounds metadata...");
-        repaired = fix_coordinate_boundaries(&repaired);
-    }
-    
-    // Repair 4: Fix basic XML declaration issues
-    if !repaired.starts_with("<?xml") {
-        println!("   🔧 Adding XML declaration...");
-        repaired = format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n{}", repaired);
-    }
-    
-    // DO NOT add artificial elevation data - this is the key difference from aggressive preprocessing
-    
-    Ok(repaired)
-}
-
-fn fix_missing_gpx_version(content: &str) -> String {
-    let mut repaired = content.to_string();
-    
-    if let Some(gpx_start) = repaired.find("<gpx") {
-        if let Some(gpx_end) = repaired[gpx_start..].find(">") {
-            let gpx_tag = &repaired[gpx_start..gpx_start + gpx_end + 1];
-            
-            if !gpx_tag.contains("version=") {
-                let mut new_gpx_tag = gpx_tag.replace(">", " version=\"1.1\">");
-                
-                if !new_gpx_tag.contains("xmlns=") {
-                    new_gpx_tag = new_gpx_tag.replace(
-                        " version=\"1.1\">",
-                        " version=\"1.1\" xmlns=\"http://www.topografix.com/GPX/1/1\">"
-                    );
-                }
-                
-                repaired = repaired.replace(gpx_tag, &new_gpx_tag);
-            }
-        }
-    }
-    
-    repaired
-}
-
-fn repair_truncated_xml(content: &str) -> String {
-    let mut repaired = content.trim().to_string();
-    
-    // Count open and close tags
-    let open_trkseg = repaired.matches("<trkseg>").count();
-    let close_trkseg = repaired.matches("</trkseg>").count();
-    let open_trk = repaired.matches("<trk>").count();
-    let close_trk = repaired.matches("</trk>").count();
-    let open_gpx = repaired.matches("<gpx").count();
-    let close_gpx = repaired.matches("</gpx>").count();
-    
-    // Close any unclosed tags
-    if open_trkseg > close_trkseg {
-        for _ in 0..(open_trkseg - close_trkseg) {
-            repaired.push_str("\n    </trkseg>");
-        }
-    }
-    
-    if open_trk > close_trk {
-        for _ in 0..(open_trk - close_trk) {
-            repaired.push_str("\n  </trk>");
-        }
-    }
-    
-    if open_gpx > close_gpx {
-        repaired.push_str("\n</gpx>");
-    }
-    
-    repaired
-}
-
-fn fix_coordinate_boundaries(content: &str) -> String {
-    let mut repaired = content.to_string();
-    
-    // Remove bounds metadata that might be causing issues
-    if let Some(start) = repaired.find("<bounds") {
-        if let Some(end) = repaired[start..].find("/>") {
-            let bounds_section = &repaired[start..start + end + 2];
-            repaired = repaired.replace(bounds_section, "");
-        }
-    }
-    
-    repaired
 }
 
 fn extract_coordinates_from_gpx(gpx: &Gpx) -> Result<(Vec<(f64, f64, f64)>, String), Box<dyn std::error::Error>> {
@@ -1103,7 +969,7 @@ fn print_conservative_summary(results: &[ConservativeAnalysisResult]) {
         }
     }
     
-    println!("\n✅ KEY BENEFITS OF CONSERVATIVE APPROACH:");
+    println!("\n✅ KEY BENEFITS OF CONSERVATIVE APPROACH WITH TOLERANT READING:");
     if from_original > from_preprocessed {
         println!("• Successfully used {} original files vs {} preprocessed", from_original, from_preprocessed);
         println!("• Preserved natural elevation data without artificial inflation");
@@ -1124,7 +990,7 @@ fn print_conservative_summary(results: &[ConservativeAnalysisResult]) {
     
     println!("\n🎯 RECOMMENDATIONS:");
     if from_original > total_files * 2 / 3 {
-        println!("✅ Continue using original files - most are readable without preprocessing");
+        println!("✅ Continue using original files - most are readable with tolerant parsing");
     }
     if artificial_concerns > 0 {
         println!("⚠️  Review {} files with artificial elevation indicators", artificial_concerns);
@@ -1134,5 +1000,5 @@ fn print_conservative_summary(results: &[ConservativeAnalysisResult]) {
         println!("🔧 {} files need better preprocessing or are truly corrupted", failed);
     }
     
-    println!("📊 Results closely match Garmin Connect/gpx.studio due to conservative approach");
+    println!("📊 Results closely match Garmin Connect/gpx.studio due to tolerant reading approach");
 }

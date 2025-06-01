@@ -10,6 +10,7 @@ use std::fs::File;
 use std::io::{BufReader, Read};
 use gpx::{read, Gpx, Track, TrackSegment, Waypoint};
 use geo::point;
+use walkdir::WalkDir;
 
 /// Enhanced GPX reading that matches the tolerance of professional tools
 pub fn read_gpx_tolerantly(path: &Path) -> Result<Gpx, Box<dyn std::error::Error>> {
@@ -381,8 +382,6 @@ pub fn diagnose_gpx_file(path: &Path) -> String {
 
 /// Count how many files can be read with each strategy
 pub fn analyze_parsing_strategies(gpx_folder: &str) -> Result<(), Box<dyn std::error::Error>> {
-    use walkdir::WalkDir;
-    
     println!("\n🔍 ANALYZING GPX PARSING STRATEGIES");
     println!("==================================");
     
