@@ -1,6 +1,6 @@
-/// FOCUSED SYMMETRIC ANALYSIS: 0.5m to 2.5m in 0.1m increments
+/// COMPREHENSIVE SYMMETRIC ANALYSIS: 0.05m to 10m in 0.02m increments
 /// 
-/// High-resolution search for the optimal SymmetricFixed interval
+/// Ultra-comprehensive search for the optimal SymmetricFixed interval
 /// Goal: Find the best balance between:
 /// 1. Elevation gain accuracy (closest to 100%)
 /// 2. Gain/loss balance (ratio closest to 1.0)
@@ -66,15 +66,17 @@ struct SingleFileResult {
 pub fn run_focused_symmetric_analysis(gpx_folder: &str) -> Result<(), Box<dyn std::error::Error>> {
     let total_start = std::time::Instant::now();
     
-    println!("\n🎯 FOCUSED SYMMETRIC ANALYSIS: 0.5m to 2.5m");
-    println!("============================================");
-    println!("High-resolution optimization of SymmetricFixed method:");
-    println!("• Testing intervals: 0.5m to 2.5m in 0.1m increments (21 intervals)");
+    println!("\n🎯 ULTRA-COMPREHENSIVE SYMMETRIC ANALYSIS: 0.05m to 10m");
+    println!("======================================================");
+    println!("Maximum-resolution optimization of SymmetricFixed method:");
+    println!("• Testing intervals: 0.05m to 10m in 0.02m increments (498 intervals)");
     println!("• Focus: Find optimal balance between accuracy and gain/loss ratio");
     println!("• Target metrics:");
     println!("  - Maximum files in 90-110% accuracy range");
     println!("  - Best gain/loss ratio balance (closest to 1.0)");
-    println!("  - Highest combined optimization score\n");
+    println!("  - Highest combined optimization score");
+    println!("• Range insights: Fine (≤1.0m), Medium (1.0-3.0m), Coarse (3.0-6.0m), Ultra (>6.0m)");
+    println!("⚡ PERFORMANCE NOTE: This analysis will process ~498 intervals with high parallelization\n");
     
     // Load GPX data
     println!("📂 Loading GPX files...");
@@ -98,25 +100,51 @@ pub fn run_focused_symmetric_analysis(gpx_folder: &str) -> Result<(), Box<dyn st
     
     println!("📊 Processing {} files with valid elevation data", files_with_elevation.len());
     
-    // Generate focused interval range: 0.5m to 2.5m in 0.1m increments
-    let intervals: Vec<f32> = (5..=25).map(|i| i as f32 * 0.1).collect();
-    println!("🔬 Testing {} intervals: {:.1}m to {:.1}m", 
+    // Generate ultra-comprehensive interval range: 0.05m to 10m in 0.02m increments
+    // Starting from 0.05m (index 1) to avoid potential division by zero issues
+    let mut intervals: Vec<f32> = Vec::new();
+    let mut current = 0.05f32;
+    while current <= 10.0 {
+        intervals.push(current);
+        current += 0.02;
+        // Round to avoid floating point precision issues
+        current = (current * 100.0).round() / 100.0;
+    }
+    
+    println!("🔬 Testing {} intervals: {:.2}m to {:.2}m in 0.02m increments", 
              intervals.len(), intervals[0], intervals[intervals.len()-1]);
+    
+    // Estimate processing time
+    let estimated_calculations = intervals.len() * files_with_elevation.len();
+    let estimated_time_per_calc = 0.15; // seconds per file per interval (conservative estimate)
+    let parallelization_factor = 12.0; // 12 cores
+    let estimated_total_seconds = (estimated_calculations as f64 * estimated_time_per_calc) / parallelization_factor;
+    
+    println!("⏱️  ESTIMATED PROCESSING TIME:");
+    println!("   • Total calculations: {} intervals × {} files = {} calculations", 
+             intervals.len(), files_with_elevation.len(), estimated_calculations);
+    println!("   • With 12-core parallelization: ~{:.1} minutes ({:.0} seconds)", 
+             estimated_total_seconds / 60.0, estimated_total_seconds);
+    println!("   • Memory usage: Expected ~2-4GB for processing\n");
     
     // Process all intervals
     let processing_start = std::time::Instant::now();
     let results = process_all_symmetric_intervals(&gpx_files_data, &files_with_elevation, &intervals)?;
-    println!("✅ Processing complete in {:.2}s", processing_start.elapsed().as_secs_f64());
+    let actual_time = processing_start.elapsed().as_secs_f64();
+    
+    println!("✅ Processing complete in {:.2}s ({:.1} minutes)", actual_time, actual_time / 60.0);
+    println!("⚡ Performance: {:.0} calculations/second", estimated_calculations as f64 / actual_time);
     
     // Write detailed results
-    let output_path = Path::new(gpx_folder).join("focused_symmetric_analysis_0.5_to_2.5m.csv");
+    let output_path = Path::new(gpx_folder).join("ultra_comprehensive_symmetric_analysis_0.05_to_10m.csv");
     write_focused_results(&results, &output_path)?;
     
     // Print comprehensive analysis
     print_focused_analysis(&results);
     
     let total_time = total_start.elapsed();
-    println!("\n⏱️  TOTAL EXECUTION TIME: {:.1} seconds", total_time.as_secs_f64());
+    println!("\n⏱️  TOTAL EXECUTION TIME: {:.1} minutes ({:.0} seconds)", 
+             total_time.as_secs_f64() / 60.0, total_time.as_secs_f64());
     println!("📁 Results saved to: {}", output_path.display());
     
     Ok(())
@@ -172,8 +200,16 @@ fn load_gpx_data(gpx_folder: &str) -> Result<(HashMap<String, GpxFileData>, Vec<
                                         }
                                         
                                         let elevations: Vec<f64> = coords.iter().map(|c| c.2).collect();
+                                        
+                                        // Handle both original and cleaned filenames
+                                        let clean_filename = if filename.starts_with("cleaned_") {
+                                            filename.strip_prefix("cleaned_").unwrap_or(&filename)
+                                        } else {
+                                            &filename
+                                        };
+                                        
                                         let official_gain = official_data
-                                            .get(&filename.to_lowercase())
+                                            .get(&clean_filename.to_lowercase())
                                             .copied()
                                             .unwrap_or(0);
                                         
@@ -214,25 +250,47 @@ fn process_all_symmetric_intervals(
              intervals.len(), valid_files.len(), 
              intervals.len() * valid_files.len());
     
-    let results: Vec<FocusedSymmetricResult> = intervals
-        .par_iter()
-        .map(|&interval| {
-            let file_results: Vec<SingleFileResult> = valid_files
-                .iter()
-                .filter_map(|filename| {
-                    if let Some(file_data) = gpx_data_arc.get(filename) {
-                        Some(process_single_file_symmetric(file_data, interval))
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-            
-            calculate_focused_metrics(interval, &file_results)
-        })
-        .collect();
+    // Process intervals in chunks to provide progress updates
+    let chunk_size = 50; // Process 50 intervals at a time
+    let mut all_results = Vec::new();
     
-    Ok(results)
+    for (chunk_idx, interval_chunk) in intervals.chunks(chunk_size).enumerate() {
+        let chunk_start = std::time::Instant::now();
+        
+        let chunk_results: Vec<FocusedSymmetricResult> = interval_chunk
+            .par_iter()
+            .map(|&interval| {
+                let file_results: Vec<SingleFileResult> = valid_files
+                    .iter()
+                    .filter_map(|filename| {
+                        if let Some(file_data) = gpx_data_arc.get(filename) {
+                            Some(process_single_file_symmetric(file_data, interval))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                
+                calculate_focused_metrics(interval, &file_results)
+            })
+            .collect();
+        
+        all_results.extend(chunk_results);
+        
+        let chunk_time = chunk_start.elapsed().as_secs_f64();
+        let progress = ((chunk_idx + 1) * chunk_size).min(intervals.len());
+        let estimated_remaining = (chunk_time * (intervals.len() - progress) as f64) / chunk_size as f64;
+        
+        println!("   ✅ Processed intervals {}-{} ({}/{}) in {:.1}s - ETA: {:.1}s remaining", 
+                 chunk_idx * chunk_size + 1, 
+                 progress,
+                 progress,
+                 intervals.len(),
+                 chunk_time,
+                 estimated_remaining);
+    }
+    
+    Ok(all_results)
 }
 
 fn process_single_file_symmetric(
@@ -454,7 +512,7 @@ fn write_focused_results(
     // Write data
     for result in sorted_results {
         wtr.write_record(&[
-            &format!("{:.1}", result.interval_m),
+            &format!("{:.2}", result.interval_m),
             &format!("{:.2}", result.optimization_score),
             &result.files_in_90_110_percent.to_string(),
             &result.files_in_80_120_percent.to_string(),
@@ -480,8 +538,8 @@ fn write_focused_results(
 }
 
 fn print_focused_analysis(results: &[FocusedSymmetricResult]) {
-    println!("\n🎯 FOCUSED SYMMETRIC ANALYSIS RESULTS");
-    println!("====================================");
+    println!("\n🎯 ULTRA-COMPREHENSIVE SYMMETRIC ANALYSIS RESULTS");
+    println!("================================================");
     
     // Sort by optimization score
     let mut sorted_results = results.to_vec();
@@ -491,7 +549,7 @@ fn print_focused_analysis(results: &[FocusedSymmetricResult]) {
     let total_files = best_result.total_files;
     
     println!("\n🏆 OPTIMAL INTERVAL FOUND:");
-    println!("Interval: {:.1}m", best_result.interval_m);
+    println!("Interval: {:.2}m", best_result.interval_m);
     println!("Optimization Score: {:.2}", best_result.optimization_score);
     
     println!("\n📊 ACCURACY PERFORMANCE:");
@@ -528,13 +586,13 @@ fn print_focused_analysis(results: &[FocusedSymmetricResult]) {
     println!("• Accuracy std deviation: {:.2}%", best_result.accuracy_std_deviation);
     println!("• Ratio std deviation: {:.3}", best_result.ratio_std_deviation);
     
-    // Show top 10 intervals
-    println!("\n🔝 TOP 10 INTERVALS:");
+    // Show top 20 intervals for ultra-comprehensive view
+    println!("\n🔝 TOP 20 INTERVALS:");
     println!("Rank | Interval | Score  | 90-110% | Balanced | Median Acc% | Median Ratio");
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
     
-    for (i, result) in sorted_results.iter().take(10).enumerate() {
-        println!("{:4} | {:7.1}m | {:6.2} | {:7} | {:8} | {:10.2} | {:11.3}",
+    for (i, result) in sorted_results.iter().take(20).enumerate() {
+        println!("{:4} | {:7.2}m | {:6.2} | {:7} | {:8} | {:10.2} | {:11.3}",
                  i + 1,
                  result.interval_m,
                  result.optimization_score,
@@ -562,36 +620,94 @@ fn print_focused_analysis(results: &[FocusedSymmetricResult]) {
         .max_by_key(|r| r.files_in_98_102_percent)
         .unwrap();
     
-    println!("• Best coverage (90-110%): {:.1}m with {}/{} files ({:.1}%)",
+    println!("• Best coverage (90-110%): {:.2}m with {}/{} files ({:.1}%)",
              best_coverage.interval_m, best_coverage.files_in_90_110_percent, total_files,
              (best_coverage.files_in_90_110_percent as f32 / total_files as f32) * 100.0);
     
-    println!("• Best balance: {:.1}m with {:.3} median ratio",
+    println!("• Best balance: {:.2}m with {:.3} median ratio",
              best_balance.interval_m, best_balance.median_gain_loss_ratio);
     
-    println!("• Best precision (98-102%): {:.1}m with {}/{} files ({:.1}%)",
+    println!("• Best precision (98-102%): {:.2}m with {}/{} files ({:.1}%)",
              best_precision.interval_m, best_precision.files_in_98_102_percent, total_files,
              (best_precision.files_in_98_102_percent as f32 / total_files as f32) * 100.0);
     
-    // Interval range analysis
+    // Ultra-fine interval range analysis
     println!("\n🔍 INTERVAL RANGE INSIGHTS:");
-    let low_intervals = sorted_results.iter().filter(|r| r.interval_m <= 1.0);
-    let mid_intervals = sorted_results.iter().filter(|r| r.interval_m > 1.0 && r.interval_m <= 2.0);
-    let high_intervals = sorted_results.iter().filter(|r| r.interval_m > 2.0);
+    let fine_intervals = sorted_results.iter().filter(|r| r.interval_m <= 1.0);
+    let medium_intervals = sorted_results.iter().filter(|r| r.interval_m > 1.0 && r.interval_m <= 3.0);
+    let coarse_intervals = sorted_results.iter().filter(|r| r.interval_m > 3.0 && r.interval_m <= 6.0);
+    let ultra_intervals = sorted_results.iter().filter(|r| r.interval_m > 6.0);
     
-    if let Some(best_low) = low_intervals.max_by(|a, b| a.optimization_score.partial_cmp(&b.optimization_score).unwrap()) {
-        println!("• Best low interval (≤1.0m): {:.1}m (score: {:.2})", best_low.interval_m, best_low.optimization_score);
+    if let Some(best_fine) = fine_intervals.max_by(|a, b| a.optimization_score.partial_cmp(&b.optimization_score).unwrap()) {
+        println!("• Best fine interval (≤1.0m): {:.2}m (score: {:.2})", best_fine.interval_m, best_fine.optimization_score);
     }
     
-    if let Some(best_mid) = mid_intervals.max_by(|a, b| a.optimization_score.partial_cmp(&b.optimization_score).unwrap()) {
-        println!("• Best mid interval (1.0-2.0m): {:.1}m (score: {:.2})", best_mid.interval_m, best_mid.optimization_score);
+    if let Some(best_medium) = medium_intervals.max_by(|a, b| a.optimization_score.partial_cmp(&b.optimization_score).unwrap()) {
+        println!("• Best medium interval (1.0-3.0m): {:.2}m (score: {:.2})", best_medium.interval_m, best_medium.optimization_score);
     }
     
-    if let Some(best_high) = high_intervals.max_by(|a, b| a.optimization_score.partial_cmp(&b.optimization_score).unwrap()) {
-        println!("• Best high interval (>2.0m): {:.1}m (score: {:.2})", best_high.interval_m, best_high.optimization_score);
+    if let Some(best_coarse) = coarse_intervals.max_by(|a, b| a.optimization_score.partial_cmp(&b.optimization_score).unwrap()) {
+        println!("• Best coarse interval (3.0-6.0m): {:.2}m (score: {:.2})", best_coarse.interval_m, best_coarse.optimization_score);
     }
     
-    println!("\n🚀 RECOMMENDATION:");
-    println!("Use SymmetricFixed with {:.1}m interval for optimal performance!", best_result.interval_m);
-    println!("This achieves the best balance of accuracy and gain/loss ratio.");
+    if let Some(best_ultra) = ultra_intervals.max_by(|a, b| a.optimization_score.partial_cmp(&b.optimization_score).unwrap()) {
+        println!("• Best ultra interval (>6.0m): {:.2}m (score: {:.2})", best_ultra.interval_m, best_ultra.optimization_score);
+    }
+    
+    // Performance distribution analysis
+    println!("\n📈 PERFORMANCE DISTRIBUTION:");
+    let excellent_intervals = sorted_results.iter().filter(|r| r.optimization_score > 80.0).count();
+    let good_intervals = sorted_results.iter().filter(|r| r.optimization_score > 70.0 && r.optimization_score <= 80.0).count();
+    let decent_intervals = sorted_results.iter().filter(|r| r.optimization_score > 60.0 && r.optimization_score <= 70.0).count();
+    
+    println!("• Excellent performance (>80): {} intervals", excellent_intervals);
+    println!("• Good performance (70-80): {} intervals", good_intervals);
+    println!("• Decent performance (60-70): {} intervals", decent_intervals);
+    
+    // Sweet spot identification with ultra-fine granularity
+    println!("\n🎯 SWEET SPOT ANALYSIS:");
+    let sweet_spot_intervals: Vec<_> = sorted_results.iter()
+        .filter(|r| r.optimization_score > 75.0)
+        .collect();
+    
+    if !sweet_spot_intervals.is_empty() {
+        let min_sweet = sweet_spot_intervals.iter().map(|r| r.interval_m).fold(f32::INFINITY, f32::min);
+        let max_sweet = sweet_spot_intervals.iter().map(|r| r.interval_m).fold(f32::NEG_INFINITY, f32::max);
+        println!("• High-performance range: {:.2}m to {:.2}m ({} intervals)", 
+                 min_sweet, max_sweet, sweet_spot_intervals.len());
+        
+        // Find tight clusters within sweet spot
+        let mut clusters = Vec::new();
+        let mut current_cluster = vec![sweet_spot_intervals[0]];
+        
+        for window in sweet_spot_intervals.windows(2) {
+            if (window[1].interval_m - window[0].interval_m).abs() < 0.10 {
+                current_cluster.push(window[1]);
+            } else {
+                if current_cluster.len() >= 3 {
+                    clusters.push(current_cluster.clone());
+                }
+                current_cluster = vec![window[1]];
+            }
+        }
+        if current_cluster.len() >= 3 {
+            clusters.push(current_cluster);
+        }
+        
+        if !clusters.is_empty() {
+            println!("• Performance clusters found:");
+            for (i, cluster) in clusters.iter().enumerate() {
+                let cluster_min = cluster.iter().map(|r| r.interval_m).fold(f32::INFINITY, f32::min);
+                let cluster_max = cluster.iter().map(|r| r.interval_m).fold(f32::NEG_INFINITY, f32::max);
+                let avg_score = cluster.iter().map(|r| r.optimization_score).sum::<f32>() / cluster.len() as f32;
+                println!("  Cluster {}: {:.2}m-{:.2}m (avg score: {:.2}, {} intervals)", 
+                         i + 1, cluster_min, cluster_max, avg_score, cluster.len());
+            }
+        }
+    }
+    
+    println!("\n🚀 FINAL RECOMMENDATION:");
+    println!("Use SymmetricFixed with {:.2}m interval for optimal performance!", best_result.interval_m);
+    println!("This achieves the best balance of accuracy, gain/loss ratio, and consistency across your dataset.");
+    println!("📊 Ultra-high resolution analysis complete with {} intervals tested!", sorted_results.len());
 }

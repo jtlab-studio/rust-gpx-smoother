@@ -122,6 +122,7 @@ pub fn load_official_elevation_data() -> Result<HashMap<String, u32>, Box<dyn st
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let gpx_folder = r"C:\Users\Dzhu\Documents\GPX Files";
+    let preprocessed_folder = r"C:\Users\Dzhu\Documents\GPX Files\Preprocessed";
     let _output_folder = r"C:\Users\Dzhu\Documents\GPX Files\GPX Analysis";
     
     // Print enhanced menu with all analysis options
@@ -220,15 +221,67 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
         "13" => {
             println!("\n🎯 Running focused symmetric analysis (0.5m to 2.5m optimization)...");
-            focused_symmetric_analysis::run_focused_symmetric_analysis(gpx_folder)?;
+            
+            // Check if preprocessed folder exists and ask user which to use
+            if Path::new(preprocessed_folder).exists() {
+                println!("📂 Both original and preprocessed folders found:");
+                println!("   Original: {}", gpx_folder);
+                println!("   Preprocessed: {}", preprocessed_folder);
+                println!("");
+                println!("🔧 RECOMMENDATION: Use preprocessed folder for best results!");
+                println!("   Preprocessed files are cleaned and repaired for consistent analysis.");
+                println!("");
+                print!("Use preprocessed folder? (y/N): ");
+                io::stdout().flush().unwrap();
+                
+                let mut choice = String::new();
+                io::stdin().read_line(&mut choice).unwrap();
+                let use_preprocessed = choice.trim().to_lowercase();
+                
+                if use_preprocessed == "y" || use_preprocessed == "yes" {
+                    println!("✅ Using preprocessed folder: {}", preprocessed_folder);
+                    focused_symmetric_analysis::run_focused_symmetric_analysis(preprocessed_folder)?;
+                } else {
+                    println!("📁 Using original folder: {}", gpx_folder);
+                    focused_symmetric_analysis::run_focused_symmetric_analysis(gpx_folder)?;
+                }
+            } else {
+                println!("📁 Using original folder: {}", gpx_folder);
+                println!("💡 TIP: Run option 15 first to preprocess files for best results!");
+                focused_symmetric_analysis::run_focused_symmetric_analysis(gpx_folder)?;
+            }
         },
         "14" => {
             println!("\n🎯 Running 1.9m symmetric analysis with individual file details...");
-            single_interval_analysis::run_single_interval_analysis(gpx_folder)?;
+            
+            // Check if preprocessed folder exists and ask user which to use
+            if Path::new(preprocessed_folder).exists() {
+                println!("📂 Both original and preprocessed folders found:");
+                println!("   Original: {}", gpx_folder);
+                println!("   Preprocessed: {}", preprocessed_folder);
+                println!("");
+                print!("Use preprocessed folder? (y/N): ");
+                io::stdout().flush().unwrap();
+                
+                let mut choice = String::new();
+                io::stdin().read_line(&mut choice).unwrap();
+                let use_preprocessed = choice.trim().to_lowercase();
+                
+                if use_preprocessed == "y" || use_preprocessed == "yes" {
+                    println!("✅ Using preprocessed folder: {}", preprocessed_folder);
+                    single_interval_analysis::run_single_interval_analysis(preprocessed_folder)?;
+                } else {
+                    println!("📁 Using original folder: {}", gpx_folder);
+                    single_interval_analysis::run_single_interval_analysis(gpx_folder)?;
+                }
+            } else {
+                println!("📁 Using original folder: {}", gpx_folder);
+                println!("💡 TIP: Run option 15 first to preprocess files for best results!");
+                single_interval_analysis::run_single_interval_analysis(gpx_folder)?;
+            }
         },
         "15" => {
             println!("\n🔧 Running GPX preprocessing (clean and repair)...");
-            let preprocessed_folder = r"C:\Users\Dzhu\Documents\GPX Files\Preprocessed";
             gpx_preprocessor::run_gpx_preprocessing(gpx_folder, preprocessed_folder)?;
         },
         "" => {
@@ -336,14 +389,20 @@ fn process_gpx_file_fine_grained(
         .unwrap_or("unknown")
         .to_string();
     
-    // Look up official gain from CSV data
+    // Look up official gain from CSV data, handle both original and cleaned filenames
+    let cleaned_filename = if filename.starts_with("cleaned_") {
+        filename.strip_prefix("cleaned_").unwrap_or(&filename)
+    } else {
+        &filename
+    };
+    
     let official_gain = official_data
-        .get(&filename.to_lowercase())
+        .get(&cleaned_filename.to_lowercase())
         .copied()
         .unwrap_or(0);
     
     if official_gain == 0 {
-        println!("⚠️  No official data for: {}", filename);
+        println!("⚠️  No official data for: {} (cleaned: {})", filename, cleaned_filename);
     }
     
     println!("🔄 Processing: {} ({:.1}km, official: {}m)", filename, total_distance_km, official_gain);
