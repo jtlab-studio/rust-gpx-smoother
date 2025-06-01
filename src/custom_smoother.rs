@@ -178,6 +178,11 @@ impl ElevationData {
     }
     
     // FIXED: NEW: Adaptive processing based on data quality detection
+    // NOTE: Uses MODERATE correction parameters to avoid over-processing
+    // - Moderate smoothing (50-100 points, not 200-500)
+    // - Reasonable gradient caps (18-25%, not 8-15%)  
+    // - Small deadband filters (3-5m, not 8-15m)
+    // - Conservative scaling targets (1.2-1.3, not 1.0-1.1)
     fn process_elevation_data_adaptive(&mut self) {
         println!("🔍 ADAPTIVE QUALITY-BASED PROCESSING");
         
@@ -202,11 +207,11 @@ impl ElevationData {
                 self.apply_standard_processing();
             },
             DataQuality::ArtificialInflation => {
-                println!("   🚨 ARTIFICIAL INFLATION DETECTED! Applying aggressive correction");
+                println!("   🚨 ARTIFICIAL INFLATION DETECTED! Applying moderate correction");
                 self.apply_aggressive_inflation_correction(raw_gain, raw_loss);
             },
             DataQuality::SevereCorruption => {
-                println!("   💀 SEVERE CORRUPTION! Applying maximum correction");
+                println!("   💀 SEVERE CORRUPTION! Applying strong correction");
                 self.apply_maximum_correction(raw_gain, raw_loss);
             }
         }
@@ -304,19 +309,19 @@ impl ElevationData {
     }
     
     fn apply_aggressive_inflation_correction(&mut self, _raw_gain: f64, _raw_loss: f64) {
-        println!("   🔧 Applying aggressive correction for artificial inflation...");
+        println!("   🔧 Applying MODERATE correction for artificial inflation...");
         
-        // Step 1: Aggressive smoothing to remove artificial spikes
-        println!("      📊 Applying aggressive 200-point smoothing...");
-        self.altitude_change = Self::rolling_mean(&self.altitude_change, 200);
+        // Step 1: MODERATE smoothing to remove artificial spikes (was 200, now 30-50)
+        println!("      📊 Applying moderate 50-point smoothing...");
+        self.altitude_change = Self::rolling_mean(&self.altitude_change, 50);
         
-        // Step 2: Very strict gradient capping (like Garmin Connect does)
-        println!("      ✂️  Applying strict gradient capping (max 15%)...");
-        self.apply_strict_gradient_capping(15.0);
+        // Step 2: Reasonable gradient capping (was 15%, now 25%)
+        println!("      ✂️  Applying reasonable gradient capping (max 25%)...");
+        self.apply_strict_gradient_capping(25.0);
         
-        // Step 3: Large deadband filtering (8m threshold)
-        println!("      🚫 Applying large deadband filtering (8m threshold)...");
-        self.apply_large_deadband_filtering(8.0);
+        // Step 3: SMALLER deadband filtering (was 8m, now 3m)
+        println!("      🚫 Applying moderate deadband filtering (3m threshold)...");
+        self.apply_large_deadband_filtering(3.0);
         
         // Step 4: CRITICAL FIX - Recalculate accumulated from modified altitude_change
         self.recalculate_accumulated_values_from_altitude_changes();
@@ -325,38 +330,44 @@ impl ElevationData {
         let processed_loss = self.accumulated_descent.last().unwrap_or(&0.0).clone();
         let new_ratio = if processed_loss > 0.0 { processed_gain / processed_loss } else { f64::INFINITY };
         
-        // Step 5: If still imbalanced, scale gain to match loss
-        if new_ratio > 1.3 && processed_loss > 100.0 {
-            println!("      ⚖️  Scaling gain to match realistic ratio...");
-            self.scale_gain_to_realistic_ratio(processed_loss, 1.1); // Target 1.1 ratio
+        // Step 5: GENTLER scaling - only if severely imbalanced
+        if new_ratio > 1.5 && processed_loss > 100.0 {
+            println!("      ⚖️  Applying gentle scaling to balance ratio...");
+            self.scale_gain_to_realistic_ratio(processed_loss, 1.2); // More conservative target
             // Recalculate again after scaling
             self.recalculate_accumulated_values_from_altitude_changes();
         }
     }
     
     fn apply_maximum_correction(&mut self, _raw_gain: f64, raw_loss: f64) {
-        println!("   💀 Applying maximum correction for severe corruption...");
+        println!("   💀 Applying STRONG correction for severe corruption...");
         
-        // Nuclear option: Very aggressive processing
-        println!("      🌪️  Applying extreme 500-point smoothing...");
-        self.altitude_change = Self::rolling_mean(&self.altitude_change, 500);
+        // Strong but not nuclear: More aggressive than moderate but not extreme (was 500, now 100)
+        println!("      🌪️  Applying strong 100-point smoothing...");
+        self.altitude_change = Self::rolling_mean(&self.altitude_change, 100);
         
-        println!("      ✂️  Applying extreme gradient capping (max 8%)...");
-        self.apply_strict_gradient_capping(8.0);
+        println!("      ✂️  Applying strong gradient capping (max 18%)...");
+        self.apply_strict_gradient_capping(18.0);
         
-        println!("      🚫 Applying huge deadband filtering (15m threshold)...");
-        self.apply_large_deadband_filtering(15.0);
+        println!("      🚫 Applying strong deadband filtering (5m threshold)...");
+        self.apply_large_deadband_filtering(5.0);
         
         // CRITICAL FIX - Recalculate from modified altitude_change
         self.recalculate_accumulated_values_from_altitude_changes();
         
-        // If loss data seems reasonable, use it as the baseline
+        // More conservative scaling for severe cases
         if raw_loss > 500.0 && raw_loss < 15000.0 {
             let processed_loss = self.accumulated_descent.last().unwrap_or(&0.0).clone();
-            println!("      🎯 Scaling gain to match loss (target ratio: 1.0)...");
-            self.scale_gain_to_realistic_ratio(processed_loss, 1.0);
-            // Recalculate again after scaling
-            self.recalculate_accumulated_values_from_altitude_changes();
+            let processed_gain = self.accumulated_ascent.last().unwrap_or(&0.0).clone();
+            let current_ratio = if processed_loss > 0.0 { processed_gain / processed_loss } else { f64::INFINITY };
+            
+            // Only scale if still very imbalanced
+            if current_ratio > 2.0 {
+                println!("      🎯 Scaling gain to match loss (target ratio: 1.3)...");
+                self.scale_gain_to_realistic_ratio(processed_loss, 1.3); // Less aggressive target
+                // Recalculate again after scaling
+                self.recalculate_accumulated_values_from_altitude_changes();
+            }
         }
     }
     

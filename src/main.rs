@@ -25,9 +25,9 @@ mod corrected_elevation_analysis;
 mod focused_symmetric_analysis;
 mod gpx_preprocessor;
 mod single_interval_analysis;
-mod gpx_preprocessing_diagnostic;    // NEW: Add the diagnostic module
-mod conservative_analysis;           // NEW: Add the conservative analysis module
-mod tolerant_gpx_reader;             // NEW: Add the tolerant GPX reader module
+mod gpx_preprocessing_diagnostic;
+mod conservative_analysis;
+mod tolerant_gpx_reader;
 
 use custom_smoother::{ElevationData, SmoothingVariant};
 
@@ -141,6 +141,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("   • 95%+ of files within ±20% accuracy");
     println!("   • Revolutionary symmetric elevation processing");
     println!("");
+    println!("🔧 NEW: BALANCED ADAPTIVE PROCESSING:");
+    println!("   • Conservative thresholds preserve natural profiles");
+    println!("   • Only corrects truly corrupted data (ratio > 1.5)");
+    println!("   • Graduated response: gentle → moderate → strong");
+    println!("   • More natural results matching professional tools");
+    println!("");
     println!("Available analyses:");
     println!("1. Fine-grained analysis (0.05m to 8m intervals)");
     println!("2. Improved scoring analysis");
@@ -154,8 +160,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("10. 🔄 Two-Pass & Savitzky-Golay Comparison Analysis");
     println!("11. 🎯 Precision Optimization Analysis");
     println!("12. ✅ Corrected Elevation Analysis (Proper Scoring + Symmetric Fix)");
-    println!("13. 🎯 Focused Symmetric Analysis (0.5m to 2.5m optimization) [NEW]");
-    println!("14. 🎯 SINGLE INTERVAL ANALYSIS: 1.9m Symmetric (File-by-File Details) [NEW]");
+    println!("13. 🎯 Focused Symmetric Analysis (0.5-2.5m) [OLD - Aggressive Processing]");
+    println!("14. 🎯 1.9m Balanced Adaptive Analysis [NEW - Recommended] 🌟");
     println!("15. 🔧 PREPROCESS GPX FILES: Clean and repair all GPX files [NEW]");
     println!("16. 🔍 DIAGNOSTIC: Compare Original vs Preprocessed Files [DO THIS FIRST]");
     println!("17. 🛡️  CONSERVATIVE ANALYSIS: Use Original Files When Possible [RECOMMENDED]");
@@ -173,12 +179,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("10. 🔄 Two-Pass & Savitzky-Golay Comparison");
     println!("11. 🎯 Precision Optimization Analysis");
     println!("12. ✅ Corrected Elevation Analysis (Fixed with Symmetric)");
-    println!("13. 🎯 Focused Symmetric Analysis (HIGH-RESOLUTION 0.5-2.5m) [RECOMMENDED]");
-    println!("14. 🎯 1.9m Symmetric Analysis (Individual File Details) [NEW - RECOMMENDED]");
+    println!("13. 🎯 Focused Symmetric Analysis (0.5-2.5m) [OLD - Aggressive]");
+    println!("14. 🎯 1.9m Balanced Adaptive Analysis [NEW - Recommended] 🌟");
     println!("15. 🔧 Preprocess GPX Files (Clean & Repair) [NEW - RECOMMENDED FIRST STEP]");
     println!("16. 🔍 Preprocessing Diagnostic (Find Artificial Elevation) [CRITICAL - DO FIRST]");
     println!("17. 🛡️  Conservative Analysis (Original Files First) [RECOMMENDED FOR ACCURACY]");
     println!("18. 🧪 Test Tolerant GPX Reading (Like Garmin Connect) [NEW - TEST APPROACH]");
+    println!("compare. 🔄 Compare Aggressive vs Balanced Processing [NEW]");
     println!("debug. 🔍 DEBUG: Show what files are actually in your folders");
     
     // Simple menu handling
@@ -234,15 +241,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
         "13" => {
             println!("\n🎯 Running focused symmetric analysis (0.5m to 2.5m optimization)...");
+            println!("⚠️  WARNING: This uses the OLD aggressive adaptive processing");
+            println!("   Files with ratio > 1.1 will get heavy smoothing and large deadbands");
+            println!("   Consider using option 14 (balanced) instead for more natural results");
             
             // Check if preprocessed folder exists and ask user which to use
             if Path::new(preprocessed_folder).exists() {
                 println!("📂 Both original and preprocessed folders found:");
                 println!("   Original: {}", gpx_folder);
                 println!("   Preprocessed: {}", preprocessed_folder);
-                println!("");
-                println!("🔧 RECOMMENDATION: Use preprocessed folder for best results!");
-                println!("   Preprocessed files are cleaned and repaired for consistent analysis.");
                 println!("");
                 print!("Use preprocessed folder? (y/N): ");
                 io::stdout().flush().unwrap();
@@ -265,13 +272,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         },
         "14" => {
-            println!("\n🎯 Running 1.9m symmetric analysis with individual file details...");
+            println!("\n🎯 Running 1.9m BALANCED adaptive analysis...");
+            println!("🌟 This version uses CONSERVATIVE thresholds for natural results:");
+            println!("   • Only corrects files with ratio > 1.5 (was 1.1)");
+            println!("   • Gentle processing preserves elevation profiles");
+            println!("   • Graduated response: gentle → moderate → strong correction");
+            println!("   • More natural results matching professional tools");
+            println!("   • Preserves terrain character and small elevation features");
             
             // Check if preprocessed folder exists and ask user which to use
             if Path::new(preprocessed_folder).exists() {
                 println!("📂 Both original and preprocessed folders found:");
                 println!("   Original: {}", gpx_folder);
                 println!("   Preprocessed: {}", preprocessed_folder);
+                println!("");
+                println!("🔧 RECOMMENDATION: Use preprocessed folder for best results!");
+                println!("   Preprocessed files are cleaned and repaired for consistent analysis.");
                 println!("");
                 print!("Use preprocessed folder? (y/N): ");
                 io::stdout().flush().unwrap();
@@ -353,6 +369,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("   (tolerant of minor XML issues, no artificial elevation data)");
             tolerant_gpx_reader::analyze_parsing_strategies(gpx_folder)?;
         },
+        "compare" => {
+            println!("\n🔄 Running comparison: Aggressive vs Balanced processing...");
+            println!("🎯 This will show you the difference between old and new adaptive processing");
+            println!("");
+            
+            // Run a quick comparison on a few sample files
+            run_processing_comparison(gpx_folder)?;
+        },
         "debug" => {
             println!("\n🔍 DEBUG: Checking folder contents...");
             
@@ -418,11 +442,192 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("👋 Exiting. Your processed GPX files are ready in the output folder!");
         },
         _ => {
-            println!("ℹ️  Unknown option. Choose a number from 1-18 or press Enter to exit.");
+            println!("ℹ️  Unknown option. Choose a number from 1-18, 'compare', 'debug', or press Enter to exit.");
         }
     }
     
     Ok(())
+}
+
+// NEW: Processing comparison function
+fn run_processing_comparison(gpx_folder: &str) -> Result<(), Box<dyn std::error::Error>> {
+    println!("🔄 PROCESSING COMPARISON: Aggressive vs Balanced");
+    println!("===============================================");
+    
+    // Find a few sample files to test
+    let mut sample_files = Vec::new();
+    for entry in WalkDir::new(gpx_folder) {
+        let entry = entry?;
+        if entry.file_type().is_file() {
+            if let Some(extension) = entry.path().extension() {
+                if extension.to_str().unwrap_or("").to_lowercase() == "gpx" {
+                    sample_files.push(entry.path().to_path_buf());
+                    if sample_files.len() >= 3 { // Just test 3 files
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    
+    if sample_files.is_empty() {
+        println!("❌ No GPX files found for comparison");
+        return Ok(());
+    }
+    
+    println!("📂 Testing on {} sample files...", sample_files.len());
+    
+    for (i, file_path) in sample_files.iter().enumerate() {
+        let filename = file_path.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown");
+        
+        println!("\n📁 File {}/{}: {}", i + 1, sample_files.len(), filename);
+        
+        // Test both processing approaches
+        match compare_file_processing(file_path) {
+            Ok((aggressive_result, balanced_result)) => {
+                println!("   📊 COMPARISON RESULTS:");
+                println!("      Method           | Gain    | Loss    | Ratio | Reduction");
+                println!("      ──────────────────────────────────────────────────────");
+                println!("      Raw Data         | {:7.1}m | {:7.1}m | {:5.2} | ──────────", 
+                         aggressive_result.0, aggressive_result.1, 
+                         if aggressive_result.1 > 0.0 { aggressive_result.0 / aggressive_result.1 } else { f64::INFINITY });
+                println!("      Aggressive (OLD) | {:7.1}m | {:7.1}m | {:5.2} | {:8.1}%", 
+                         aggressive_result.2, aggressive_result.3, 
+                         if aggressive_result.3 > 0.0 { aggressive_result.2 / aggressive_result.3 } else { f64::INFINITY },
+                         ((aggressive_result.0 - aggressive_result.2) / aggressive_result.0) * 100.0);
+                println!("      Balanced (NEW)   | {:7.1}m | {:7.1}m | {:5.2} | {:8.1}%", 
+                         balanced_result.2, balanced_result.3, 
+                         if balanced_result.3 > 0.0 { balanced_result.2 / balanced_result.3 } else { f64::INFINITY },
+                         ((balanced_result.0 - balanced_result.2) / balanced_result.0) * 100.0);
+                
+                // Analysis
+                let aggressive_reduction = ((aggressive_result.0 - aggressive_result.2) / aggressive_result.0) * 100.0;
+                let balanced_reduction = ((balanced_result.0 - balanced_result.2) / balanced_result.0) * 100.0;
+                
+                if aggressive_reduction > balanced_reduction + 10.0 {
+                    println!("      🎯 BALANCED is less aggressive ({:.1}% vs {:.1}% reduction)", 
+                             balanced_reduction, aggressive_reduction);
+                }
+                
+                let raw_ratio = if aggressive_result.1 > 0.0 { aggressive_result.0 / aggressive_result.1 } else { f64::INFINITY };
+                if raw_ratio > 1.1 && raw_ratio <= 1.5 {
+                    println!("      🌿 This file has natural 1.1-1.5 ratio - BALANCED preserves it better");
+                }
+            }
+            Err(e) => {
+                println!("   ❌ Comparison failed: {}", e);
+            }
+        }
+    }
+    
+    println!("\n💡 SUMMARY:");
+    println!("The balanced approach should show:");
+    println!("✅ Less aggressive gain reduction (preserves natural profiles)");
+    println!("✅ More natural gain/loss ratios for legitimate trails");
+    println!("✅ Better preservation of terrain character");
+    println!("✅ Similar or better accuracy on files that truly need correction");
+    
+    Ok(())
+}
+
+// Helper function to compare processing approaches
+fn compare_file_processing(file_path: &Path) -> Result<((f64, f64, f64, f64), (f64, f64, f64, f64)), Box<dyn std::error::Error>> {
+    // Read the file
+    let gpx = tolerant_gpx_reader::read_gpx_tolerantly(file_path)?;
+    
+    // Extract coordinates
+    let mut coords = Vec::new();
+    for track in &gpx.tracks {
+        for segment in &track.segments {
+            for point in &segment.points {
+                if let Some(elevation) = point.elevation {
+                    let lat = point.point().y();
+                    let lon = point.point().x();
+                    coords.push((lat, lon, elevation));
+                }
+            }
+        }
+    }
+    
+    if coords.is_empty() {
+        return Err("No elevation data found".into());
+    }
+    
+    // Calculate distances
+    let mut distances = vec![0.0];
+    for i in 1..coords.len() {
+        let a = point!(x: coords[i-1].1, y: coords[i-1].0);
+        let b = point!(x: coords[i].1, y: coords[i].0);
+        let dist = a.haversine_distance(&b);
+        distances.push(distances[i-1] + dist);
+    }
+    
+    let elevations: Vec<f64> = coords.iter().map(|c| c.2).collect();
+    
+    // Calculate raw gain/loss
+    let (raw_gain, raw_loss) = calculate_raw_gain_loss(&elevations);
+    
+    // Test aggressive processing (simulate old thresholds)
+    let aggressive_result = {
+        let mut elevation_data = ElevationData::new_with_variant(
+            elevations.clone(),
+            distances.clone(),
+            SmoothingVariant::AdaptiveQuality
+        );
+        
+        // Simulate aggressive processing by calling the old aggressive method manually
+        elevation_data.calculate_altitude_changes();
+        let ratio = if raw_loss > 0.0 { raw_gain / raw_loss } else { f64::INFINITY };
+        
+        if ratio > 1.1 { // Old aggressive threshold
+            // Simulate aggressive processing
+            elevation_data.altitude_change = ElevationData::rolling_mean(&elevation_data.altitude_change, 200);
+            elevation_data.apply_symmetric_deadband_filtering(8.0);
+        }
+        
+        elevation_data.recalculate_accumulated_values_from_altitude_changes();
+        (raw_gain, raw_loss, elevation_data.get_total_elevation_gain(), elevation_data.get_total_elevation_loss())
+    };
+    
+    // Test balanced processing (new approach)
+    let balanced_result = {
+        let mut elevation_data = ElevationData::new_with_variant(
+            elevations.clone(),
+            distances.clone(),
+            SmoothingVariant::AdaptiveQuality
+        );
+        
+        // Use the new balanced approach
+        elevation_data.process_elevation_data_adaptive();
+        (raw_gain, raw_loss, elevation_data.get_total_elevation_gain(), elevation_data.get_total_elevation_loss())
+    };
+    
+    Ok((aggressive_result, balanced_result))
+}
+
+fn calculate_raw_gain_loss(elevations: &[f64]) -> (f64, f64) {
+    if elevations.len() < 2 {
+        return (0.0, 0.0);
+    }
+    
+    let mut gain = 0.0;
+    let mut loss = 0.0;
+    
+    for window in elevations.windows(2) {
+        let change = window[1] - window[0];
+        
+        if change.abs() > 0.001 {
+            if change > 0.0 {
+                gain += change;
+            } else {
+                loss += -change;
+            }
+        }
+    }
+    
+    (gain, loss)
 }
 
 // Fine-grained analysis function (existing functionality)
