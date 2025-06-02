@@ -30,8 +30,10 @@ mod conservative_analysis;
 mod tolerant_gpx_reader;
 mod gpx_processor_adaptive;
 mod garmin_like_processor;
+mod adaptive_interval_selector; // NEW: Intelligent interval selection
 
 use custom_smoother::{ElevationData, SmoothingVariant};
+use adaptive_interval_selector::{AdaptiveIntervalSelector, FileCharacteristics, NoiseLevel};
 
 #[derive(Debug, Deserialize)]
 struct OfficialElevationRecord {
@@ -144,7 +146,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("   • 95%+ of files within ±20% accuracy");
     println!("   • Revolutionary symmetric elevation processing");
     println!("");
-    println!("🔧 NEW: BALANCED ADAPTIVE PROCESSING:");
+    println!("🧠 NEW: INTELLIGENT ADAPTIVE PROCESSING:");
+    println!("   • Data-driven interval selection based on 203-file analysis");
+    println!("   • Clean files get larger intervals (25-45m) for natural preservation");
+    println!("   • Corrupted files get smaller intervals (3-12m) for noise reduction");
+    println!("   • Considers gradient issues, quality score, noise level, distance");
+    println!("   • Should achieve highest accuracy rates by matching method to data");
+    println!("");
+    println!("🔧 BALANCED ADAPTIVE PROCESSING:");
     println!("   • Conservative thresholds preserve natural profiles");
     println!("   • Only corrects truly corrupted data (ratio > 1.5)");
     println!("   • Graduated response: gentle → moderate → strong");
@@ -170,7 +179,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("17. 🛡️  CONSERVATIVE ANALYSIS: Use Original Files When Possible [RECOMMENDED]");
     println!("18. 🧪 TEST TOLERANT GPX READING: Like Garmin Connect [NEW - TEST FIRST]");
     println!("19. 📊 PROCESS GPX FILES: Create processed files with track names [NEW]");
-    println!("20. 🏃 GARMIN-LIKE ANALYSIS: Test 10m, 25m, 50m intervals [NEW]");
+    println!("20. 🏃 GARMIN-LIKE ANALYSIS: Test 3-45m intervals [NEW]");
+    println!("21. 🧠 INTELLIGENT ADAPTIVE PROCESSING: Data-Driven Intervals [NEW - CUTTING EDGE] ⭐");
     
     // Offer menu for additional analyses
     println!("\n📊 Choose an analysis to run:");
@@ -191,7 +201,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("17. 🛡️  Conservative Analysis (Original Files First) [RECOMMENDED FOR ACCURACY]");
     println!("18. 🧪 Test Tolerant GPX Reading (Like Garmin Connect) [NEW - TEST APPROACH]");
     println!("19. 📊 Process GPX Files (Create files with track names) [NEW]");
-    println!("20. 🏃 Garmin-like Analysis (Test 10m, 25m, 50m intervals) [NEW]");
+    println!("20. 🏃 Garmin-like Analysis (Test 3-45m intervals) [NEW]");
+    println!("21. 🧠 Intelligent Adaptive Processing (Data-Driven Intervals) [NEW - CUTTING EDGE] ⭐");
     println!("compare. 🔄 Compare Aggressive vs Balanced Processing [NEW]");
     println!("debug. 🔍 DEBUG: Show what files are actually in your folders");
     
