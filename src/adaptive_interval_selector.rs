@@ -24,7 +24,7 @@ pub struct FileCharacteristics {
     pub point_density_per_km: f64,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum NoiseLevel {
     Low,    // Clean, consistent elevation data
     Medium, // Some noise but generally good
@@ -78,7 +78,7 @@ impl AdaptiveIntervalSelector {
     
     pub fn recommend_interval(&self, characteristics: &FileCharacteristics) -> IntervalRecommendation {
         let mut reasoning = Vec::new();
-        let mut confidence_score = 1.0;
+        let mut confidence_score: f64 = 1.0;
         
         // Step 1: Determine base interval from gradient issues (primary predictor)
         let base_interval = self.get_base_interval_from_gradient_issues(
@@ -224,7 +224,7 @@ impl AdaptiveIntervalSelector {
     }
     
     fn calculate_confidence_score(&self, characteristics: &FileCharacteristics) -> f64 {
-        let mut confidence = 0.8; // Base confidence
+        let mut confidence: f64 = 0.8; // Base confidence
         
         // Higher confidence for clear indicators
         if characteristics.gradient_issues_count == 0 || characteristics.gradient_issues_count > 500 {
@@ -262,7 +262,7 @@ impl AdaptiveIntervalSelector {
         test_intervals.extend(recommendation.fallback_intervals_m);
         
         let mut best_interval = recommendation.primary_interval_m;
-        let mut best_accuracy = 0.0;
+        let mut best_accuracy: f64 = 0.0;
         let mut best_gain = 0.0;
         
         for interval in test_intervals {

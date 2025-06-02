@@ -1,8 +1,8 @@
-/// GARMIN-LIKE PROCESSOR WITH EXTENDED INTERVAL RANGE (3-45m)
+/// GARMIN-LIKE PROCESSOR WITH FOCUSED INTERVAL RANGE (7-25m)
 /// 
 /// Implements Garmin Connect-style elevation processing:
 /// - Minimal smoothing (3-5 point moving average)
-/// - Distance-based resampling from 3m to 45m in 1m increments
+/// - Distance-based resampling from 7m to 25m in 0.25m increments
 /// - No aggressive filtering or deadbands
 /// - Preserves original data characteristics
 /// - Comprehensive analysis for each interval
@@ -20,10 +20,10 @@ const GARMIN_SMOOTHING_WINDOW: usize = 5;  // Light smoothing only
 const MAX_REALISTIC_GRADIENT: f64 = 35.0;  // 35% max gradient
 const SPIKE_THRESHOLD: f64 = 10.0;         // 10m sudden change is suspicious
 
-// Interval range: 3m to 45m in 1m increments
-const MIN_INTERVAL: f64 = 3.0;
-const MAX_INTERVAL: f64 = 45.0;
-const INTERVAL_STEP: f64 = 1.0;
+// Updated interval range: 7m to 25m in 0.25m increments
+const MIN_INTERVAL: f64 = 7.0;
+const MAX_INTERVAL: f64 = 25.0;
+const INTERVAL_STEP: f64 = 0.25;
 
 #[derive(Debug, Clone)]
 pub struct IntervalResult {
@@ -75,11 +75,15 @@ pub struct GarminAnalysisSummary {
     
     // Files within accuracy thresholds for each interval
     files_within_10_percent_by_interval: HashMap<String, u32>,
-    files_within_5_percent_by_interval: HashMap<String, u32>,
+    files_within_15_percent_by_interval: HashMap<String, u32>,
     
     // Most common best interval
     most_common_best_interval: String,
     most_common_best_count: u32,
+    
+    // Summary statistics for the new range
+    total_intervals_tested: u32,
+    interval_range: String,
 }
 
 pub fn run_garmin_like_analysis(gpx_folder: &str) -> Result<(), Box<dyn std::error::Error>> {
@@ -87,11 +91,16 @@ pub fn run_garmin_like_analysis(gpx_folder: &str) -> Result<(), Box<dyn std::err
     println!("===========================================");
     println!("Testing Garmin Connect-style processing approach:");
     println!("• Minimal smoothing (5-point moving average)");
-    println!("• Distance-based resampling: 3m to 45m in 1m increments");
-    println!("• Total intervals tested: 43");
+    println!("• Distance-based resampling: 7m to 25m in 0.25m increments");
+    
+    // Calculate total intervals
+    let total_intervals = ((MAX_INTERVAL - MIN_INTERVAL) / INTERVAL_STEP + 1.0) as u32;
+    println!("• Total intervals tested: {}", total_intervals);
+    
     println!("• No aggressive filtering or deadbands");
     println!("• Preserve original data characteristics");
-    println!("• Compare with official elevation data\n");
+    println!("• Compare with official elevation data");
+    println!("• Track files within ±10% and ±15% accuracy\n");
     
     // Load official elevation data
     println!("📂 Loading official elevation data...");
@@ -121,7 +130,7 @@ pub fn run_garmin_like_analysis(gpx_folder: &str) -> Result<(), Box<dyn std::err
                 println!("   ✅ Success:");
                 println!("      Raw: {:.1}m gain (ratio {:.2}, accuracy {:.1}%)", 
                          result.raw_elevation_gain_m, result.raw_gain_loss_ratio, result.raw_accuracy_percent);
-                println!("      Best interval: {:.1}m ({:.1}% accuracy)", 
+                println!("      Best interval: {:.2}m ({:.1}% accuracy)", 
                          result.best_interval_m, result.best_accuracy_percent);
                 
                 results.push(result);
@@ -139,10 +148,10 @@ pub fn run_garmin_like_analysis(gpx_folder: &str) -> Result<(), Box<dyn std::err
     let summary = calculate_summary(&results);
     
     // Write results to CSV
-    let output_path = Path::new(gpx_folder).join("garmin_analysis_3-45m_detailed.csv");
+    let output_path = Path::new(gpx_folder).join("garmin_analysis_7-25m_detailed.csv");
     write_results_csv(&results, &output_path)?;
     
-    let summary_path = Path::new(gpx_folder).join("garmin_analysis_3-45m_summary.csv");
+    let summary_path = Path::new(gpx_folder).join("garmin_analysis_7-25m_summary.csv");
     write_summary_csv(&summary, &summary_path)?;
     
     // Print analysis
@@ -235,7 +244,7 @@ fn process_file_garmin_style(
         0.0
     };
     
-    // Process with all intervals
+    // Process with all intervals in the new range
     let mut interval_results = HashMap::new();
     let mut best_interval = IntervalResult {
         interval_m: 0.0,
@@ -246,8 +255,9 @@ fn process_file_garmin_style(
     };
     let mut best_accuracy_diff = f64::INFINITY;
     
+    // Generate intervals from 7m to 25m in 0.25m increments
     let mut interval = MIN_INTERVAL;
-    while interval <= MAX_INTERVAL {
+    while interval <= MAX_INTERVAL + 0.001 { // Add small epsilon to handle floating point precision
         let processed = process_with_garmin_method(&elevations, &distances, interval);
         
         let accuracy = if official_gain > 0 {
@@ -273,7 +283,7 @@ fn process_file_garmin_style(
             }
         }
         
-        interval_results.insert(format!("{:.0}m", interval), result);
+        interval_results.insert(format!("{:.2}m", interval), result);
         
         interval += INTERVAL_STEP;
     }
@@ -534,12 +544,12 @@ fn calculate_summary(results: &[GarminLikeResult]) -> GarminAnalysisSummary {
     let mut avg_accuracy_by_interval = HashMap::new();
     let mut best_interval_distribution = HashMap::new();
     let mut files_within_10_percent = HashMap::new();
-    let mut files_within_5_percent = HashMap::new();
+    let mut files_within_15_percent = HashMap::new();
     
     // Calculate averages for each interval
     let mut interval = MIN_INTERVAL;
-    while interval <= MAX_INTERVAL {
-        let interval_key = format!("{:.0}m", interval);
+    while interval <= MAX_INTERVAL + 0.001 {
+        let interval_key = format!("{:.2}m", interval);
         
         if !files_with_official.is_empty() {
             let mut sum = 0.0;
@@ -554,8 +564,8 @@ fn calculate_summary(results: &[GarminLikeResult]) -> GarminAnalysisSummary {
                     if interval_result.accuracy_percent >= 90.0 && interval_result.accuracy_percent <= 110.0 {
                         *files_within_10_percent.entry(interval_key.clone()).or_insert(0) += 1;
                     }
-                    if interval_result.accuracy_percent >= 95.0 && interval_result.accuracy_percent <= 105.0 {
-                        *files_within_5_percent.entry(interval_key.clone()).or_insert(0) += 1;
+                    if interval_result.accuracy_percent >= 85.0 && interval_result.accuracy_percent <= 115.0 {
+                        *files_within_15_percent.entry(interval_key.clone()).or_insert(0) += 1;
                     }
                 }
             }
@@ -570,7 +580,7 @@ fn calculate_summary(results: &[GarminLikeResult]) -> GarminAnalysisSummary {
     
     // Track best intervals
     for result in &files_with_official {
-        let best_key = format!("{:.0}m", result.best_interval_m);
+        let best_key = format!("{:.2}m", result.best_interval_m);
         *best_interval_distribution.entry(best_key).or_insert(0) += 1;
     }
     
@@ -581,15 +591,20 @@ fn calculate_summary(results: &[GarminLikeResult]) -> GarminAnalysisSummary {
         .map(|(k, v)| (k.clone(), *v))
         .unwrap_or(("None".to_string(), 0));
     
+    // Calculate total intervals tested
+    let total_intervals_tested = ((MAX_INTERVAL - MIN_INTERVAL) / INTERVAL_STEP + 1.0) as u32;
+    
     GarminAnalysisSummary {
         total_files_processed: total_files,
         files_with_official_data: files_with_official.len() as u32,
         avg_accuracy_by_interval,
         best_interval_distribution,
         files_within_10_percent_by_interval: files_within_10_percent,
-        files_within_5_percent_by_interval: files_within_5_percent,
+        files_within_15_percent_by_interval: files_within_15_percent,
         most_common_best_interval: most_common_interval,
         most_common_best_count: most_common_count,
+        total_intervals_tested,
+        interval_range: format!("{}m to {}m in {}m increments", MIN_INTERVAL, MAX_INTERVAL, INTERVAL_STEP),
     }
 }
 
@@ -613,8 +628,8 @@ fn write_results_csv(
     
     // Add columns for each interval
     let mut interval = MIN_INTERVAL;
-    while interval <= MAX_INTERVAL {
-        let prefix = format!("{:.0}", interval);
+    while interval <= MAX_INTERVAL + 0.001 {
+        let prefix = format!("{:.2}", interval);
         header.push(format!("gain_{}m", prefix));
         header.push(format!("loss_{}m", prefix));
         header.push(format!("ratio_{}m", prefix));
@@ -646,8 +661,8 @@ fn write_results_csv(
         
         // Add interval data
         let mut interval = MIN_INTERVAL;
-        while interval <= MAX_INTERVAL {
-            let interval_key = format!("{:.0}m", interval);
+        while interval <= MAX_INTERVAL + 0.001 {
+            let interval_key = format!("{:.2}m", interval);
             if let Some(interval_result) = result.interval_results.get(&interval_key) {
                 row.push(format!("{:.1}", interval_result.gain_m));
                 row.push(format!("{:.1}", interval_result.loss_m));
@@ -663,7 +678,7 @@ fn write_results_csv(
         }
         
         // Add best interval and quality data
-        row.push(format!("{:.1}", result.best_interval_m));
+        row.push(format!("{:.2}", result.best_interval_m));
         row.push(format!("{:.1}", result.best_accuracy_percent));
         row.push(result.noise_level.clone());
         row.push(result.gradient_issues.to_string());
@@ -682,27 +697,29 @@ fn write_summary_csv(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut wtr = Writer::from_path(output_path)?;
     
-    // Write summary statistics
-    wtr.write_record(&["Metric", "Value"])?;
-    wtr.write_record(&["Total Files Processed", &summary.total_files_processed.to_string()])?;
-    wtr.write_record(&["Files with Official Data", &summary.files_with_official_data.to_string()])?;
+    // Write summary statistics - use 3 columns consistently
+    wtr.write_record(&["Metric", "Value", "Notes"])?;
+    wtr.write_record(&["Total Files Processed", &summary.total_files_processed.to_string(), ""])?;
+    wtr.write_record(&["Files with Official Data", &summary.files_with_official_data.to_string(), ""])?;
+    wtr.write_record(&["Total Intervals Tested", &summary.total_intervals_tested.to_string(), ""])?;
+    wtr.write_record(&["Interval Range", &summary.interval_range, ""])?;
     
     // Average accuracies
-    wtr.write_record(&["", ""])?; // Empty row
-    wtr.write_record(&["Average Accuracies by Interval", ""])?;
+    wtr.write_record(&["", "", ""])?; // Empty row
+    wtr.write_record(&["Average Accuracies by Interval", "Accuracy %", ""])?;
     let mut interval = MIN_INTERVAL;
-    while interval <= MAX_INTERVAL {
-        let interval_key = format!("{:.0}m", interval);
+    while interval <= MAX_INTERVAL + 0.001 {
+        let interval_key = format!("{:.2}m", interval);
         let avg = summary.avg_accuracy_by_interval
             .get(&interval_key)
             .unwrap_or(&0.0);
-        wtr.write_record(&[&interval_key, &format!("{:.2}%", avg)])?;
+        wtr.write_record(&[&interval_key, &format!("{:.2}%", avg), ""])?;
         interval += INTERVAL_STEP;
     }
     
     // Best interval distribution
-    wtr.write_record(&["", ""])?;
-    wtr.write_record(&["Best Interval Distribution", "Count"])?;
+    wtr.write_record(&["", "", ""])?;
+    wtr.write_record(&["Best Interval Distribution", "Count", ""])?;
     let mut sorted_intervals: Vec<_> = summary.best_interval_distribution.iter().collect();
     sorted_intervals.sort_by(|a, b| {
         let a_num: f64 = a.0.trim_end_matches('m').parse().unwrap_or(0.0);
@@ -710,49 +727,62 @@ fn write_summary_csv(
         a_num.partial_cmp(&b_num).unwrap()
     });
     for (interval, count) in sorted_intervals {
-        wtr.write_record(&[interval, &count.to_string()])?;
+        wtr.write_record(&[interval, &count.to_string(), ""])?;
     }
     
-    // Files within accuracy thresholds
-    wtr.write_record(&["", ""])?;
-    wtr.write_record(&["Files Within ±10% Accuracy", "Count"])?;
+    // Files within ±10% accuracy
+    wtr.write_record(&["", "", ""])?; // Empty row with 3 columns
+    wtr.write_record(&["Files Within ±10% Accuracy", "Count", "Percentage"])?;
     interval = MIN_INTERVAL;
-    while interval <= MAX_INTERVAL {
-        let interval_key = format!("{:.0}m", interval);
+    while interval <= MAX_INTERVAL + 0.001 {
+        let interval_key = format!("{:.2}m", interval);
         let count = summary.files_within_10_percent_by_interval
             .get(&interval_key)
             .unwrap_or(&0);
-        wtr.write_record(&[&interval_key, &count.to_string()])?;
+        let percentage = if summary.files_with_official_data > 0 {
+            (*count as f64 / summary.files_with_official_data as f64) * 100.0
+        } else {
+            0.0
+        };
+        wtr.write_record(&[&interval_key, &count.to_string(), &format!("{:.1}%", percentage)])?;
         interval += INTERVAL_STEP;
     }
     
-    wtr.write_record(&["", ""])?;
-    wtr.write_record(&["Files Within ±5% Accuracy", "Count"])?;
+    // Files within ±15% accuracy
+    wtr.write_record(&["", "", ""])?; // Empty row with 3 columns
+    wtr.write_record(&["Files Within ±15% Accuracy", "Count", "Percentage"])?;
     interval = MIN_INTERVAL;
-    while interval <= MAX_INTERVAL {
-        let interval_key = format!("{:.0}m", interval);
-        let count = summary.files_within_5_percent_by_interval
+    while interval <= MAX_INTERVAL + 0.001 {
+        let interval_key = format!("{:.2}m", interval);
+        let count = summary.files_within_15_percent_by_interval
             .get(&interval_key)
             .unwrap_or(&0);
-        wtr.write_record(&[&interval_key, &count.to_string()])?;
+        let percentage = if summary.files_with_official_data > 0 {
+            (*count as f64 / summary.files_with_official_data as f64) * 100.0
+        } else {
+            0.0
+        };
+        wtr.write_record(&[&interval_key, &count.to_string(), &format!("{:.1}%", percentage)])?;
         interval += INTERVAL_STEP;
     }
     
-    wtr.write_record(&["", ""])?;
-    wtr.write_record(&["Most Common Best Interval", &summary.most_common_best_interval])?;
-    wtr.write_record(&["Files with this Best Interval", &summary.most_common_best_count.to_string()])?;
+    wtr.write_record(&["", "", ""])?; // Empty row with 3 columns
+    wtr.write_record(&["Most Common Best Interval", &summary.most_common_best_interval, ""])?;
+    wtr.write_record(&["Files with this Best Interval", &summary.most_common_best_count.to_string(), ""])?;
     
     wtr.flush()?;
     Ok(())
 }
 
 fn print_detailed_analysis(results: &[GarminLikeResult], summary: &GarminAnalysisSummary) {
-    println!("\n📊 GARMIN-LIKE PROCESSING RESULTS (3-45m)");
-    println!("=========================================");
+    println!("\n📊 GARMIN-LIKE PROCESSING RESULTS (7-25m in 0.25m increments)");
+    println!("==============================================================");
     
     println!("\n📈 OVERALL STATISTICS:");
     println!("• Total files processed: {}", summary.total_files_processed);
     println!("• Files with official data: {}", summary.files_with_official_data);
+    println!("• Total intervals tested: {}", summary.total_intervals_tested);
+    println!("• Interval range: {}", summary.interval_range);
     
     if summary.files_with_official_data > 0 {
         println!("\n🎯 BEST AVERAGE ACCURACIES:");
@@ -776,7 +806,7 @@ fn print_detailed_analysis(results: &[GarminLikeResult], summary: &GarminAnalysi
         let mut sorted_best: Vec<_> = summary.best_interval_distribution.iter().collect();
         sorted_best.sort_by(|a, b| b.1.cmp(a.1)); // Sort by count descending
         
-        for (interval, count) in sorted_best.iter().take(5) {
+        for (interval, count) in sorted_best.iter().take(10) {
             let percentage = (**count as f64 / summary.files_with_official_data as f64) * 100.0;
             println!("• {}: {} files ({:.1}%)", interval, count, percentage);
         }
@@ -786,6 +816,16 @@ fn print_detailed_analysis(results: &[GarminLikeResult], summary: &GarminAnalysi
         within_10.sort_by(|a, b| b.1.cmp(a.1)); // Sort by count descending
         
         for (interval, count) in within_10.iter().take(10) {
+            let percentage = (**count as f64 / summary.files_with_official_data as f64) * 100.0;
+            println!("• {}: {}/{} ({:.1}%)", 
+                     interval, count, summary.files_with_official_data, percentage);
+        }
+        
+        println!("\n🎯 EXCELLENT PERFORMING INTERVALS (±15% accuracy):");
+        let mut within_15: Vec<_> = summary.files_within_15_percent_by_interval.iter().collect();
+        within_15.sort_by(|a, b| b.1.cmp(a.1)); // Sort by count descending
+        
+        for (interval, count) in within_15.iter().take(10) {
             let percentage = (**count as f64 / summary.files_with_official_data as f64) * 100.0;
             println!("• {}: {}/{} ({:.1}%)", 
                      interval, count, summary.files_with_official_data, percentage);
@@ -804,7 +844,7 @@ fn print_detailed_analysis(results: &[GarminLikeResult], summary: &GarminAnalysi
         
         for (i, result) in best_files.iter().take(5).enumerate() {
             println!("\n{}. {} (Official: {}m)", i + 1, result.filename, result.official_elevation_gain_m);
-            println!("   Best: {:.0}m interval ({:.1}% accuracy)", 
+            println!("   Best: {:.2}m interval ({:.1}% accuracy)", 
                      result.best_interval_m, result.best_accuracy_percent);
             println!("   Quality: {} noise, {} gradient issues", 
                      result.noise_level, result.gradient_issues);
@@ -814,33 +854,18 @@ fn print_detailed_analysis(results: &[GarminLikeResult], summary: &GarminAnalysi
         println!("• Most common best interval: {} ({} files)", 
                  summary.most_common_best_interval, summary.most_common_best_count);
         
-        // Analyze optimal range
-        let small_intervals: Vec<_> = (3..=15).map(|i| format!("{}m", i)).collect();
-        let medium_intervals: Vec<_> = (16..=30).map(|i| format!("{}m", i)).collect();
-        let large_intervals: Vec<_> = (31..=45).map(|i| format!("{}m", i)).collect();
-        
-        let small_count: u32 = small_intervals.iter()
-            .map(|k| summary.best_interval_distribution.get(k).unwrap_or(&0))
-            .sum();
-        let medium_count: u32 = medium_intervals.iter()
-            .map(|k| summary.best_interval_distribution.get(k).unwrap_or(&0))
-            .sum();
-        let large_count: u32 = large_intervals.iter()
-            .map(|k| summary.best_interval_distribution.get(k).unwrap_or(&0))
-            .sum();
-        
-        if small_count > medium_count && small_count > large_count {
-            println!("• Small intervals (3-15m) work best for most files");
-        } else if medium_count > small_count && medium_count > large_count {
-            println!("• Medium intervals (16-30m) work best for most files");
-        } else if large_count > small_count && large_count > medium_count {
-            println!("• Large intervals (31-45m) work best for most files");
+        // Find the best performing interval overall
+        if let Some((best_overall, best_count)) = within_10.first() {
+            let best_percentage = (**best_count as f64 / summary.files_with_official_data as f64) * 100.0;
+            println!("• Best overall interval for ±10% accuracy: {} ({:.1}% of files)", 
+                     best_overall, best_percentage);
         }
         
-        println!("\n🔍 COMPARED TO COMPLEX PROCESSING:");
-        println!("• Simple Garmin-like approach is highly effective");
-        println!("• Wide range of intervals tested (3-45m)");
-        println!("• Optimal interval varies by file characteristics");
-        println!("• No complex adaptive processing required");
+        println!("\n🔍 FOCUSED RANGE ANALYSIS (7-25m):");
+        println!("• Focused on the most promising interval range");
+        println!("• Fine-grained 0.25m increments for precision");
+        println!("• {} intervals tested vs previous 43 intervals", summary.total_intervals_tested);
+        println!("• Better resolution in the optimal range");
+        println!("• Tracks both ±10% and ±15% accuracy thresholds");
     }
 }
