@@ -66,7 +66,17 @@ impl ElevationData {
     
     fn calculate_distance_changes(&mut self) {
         if self.cumulative_distance.is_empty() {
+            println!("      [DEBUG] No cumulative distances to process");
             return;
+        }
+        
+        // Debug info
+        let total_distance = self.cumulative_distance.last().unwrap_or(&0.0);
+        println!("      [DEBUG] Total distance: {:.1}m, Points: {}", total_distance, self.cumulative_distance.len());
+        
+        // Check for potential issues
+        if *total_distance < 0.1 {
+            println!("      [WARNING] Very small total distance: {:.3}m", total_distance);
         }
         
         // ULTRA-SAFE: Use .get() for first element
@@ -82,11 +92,21 @@ impl ElevationData {
                 self.cumulative_distance.get(i), 
                 self.cumulative_distance.get(i - 1)
             ) {
-                self.distance_change.push(current - previous);
+                let change = current - previous;
+                if change < 0.0 {
+                    println!("      [WARNING] Negative distance change at index {}: {:.3}m", i, change);
+                }
+                self.distance_change.push(change);
             } else {
                 // Safety fallback
                 self.distance_change.push(0.0);
             }
+        }
+        
+        // Check for unusual patterns
+        let zero_changes = self.distance_change.iter().filter(|&&d| d == 0.0).count();
+        if zero_changes > self.distance_change.len() / 2 {
+            println!("      [WARNING] {} zero distance changes out of {}", zero_changes, self.distance_change.len());
         }
     }
     
@@ -171,16 +191,12 @@ impl ElevationData {
         let min_len = std::cmp::min(self.altitude_change.len(), self.distance_change.len());
         
         for i in 0..min_len {
-            if i < self.distance_change.len() && i < self.altitude_change.len() {
-                if self.distance_change[i] == 0.0 {
-                    self.gradient_percent.push(0.0);
-                } else {
-                    self.gradient_percent.push(
-                        (self.altitude_change[i] / self.distance_change[i]) * 100.0
-                    );
-                }
-            } else {
+            if self.distance_change[i] == 0.0 {
                 self.gradient_percent.push(0.0);
+            } else {
+                self.gradient_percent.push(
+                    (self.altitude_change[i] / self.distance_change[i]) * 100.0
+                );
             }
         }
     }
@@ -293,6 +309,8 @@ impl ElevationData {
     fn apply_standard_symmetric_processing(&mut self) {
         // This is what was working great before - don't mess with it!
         
+        println!("      [DEBUG] Applying standard symmetric processing...");
+        
         // Step 1: Apply the proven 1.9m symmetric processing
         self.apply_custom_interval_processing_symmetric(1.9);
         
@@ -305,6 +323,8 @@ impl ElevationData {
         // Clear any quality issues since this is good data
         self.data_quality_issues.clear();
         self.data_quality_issues.push("Good quality data".to_string());
+        
+        println!("      [DEBUG] Standard processing complete!");
     }
     
     // FIXED: More conservative assessment - only flag truly problematic files
@@ -344,7 +364,9 @@ impl ElevationData {
         let mut extreme_gradients = 0;
         let mut total_segments = 0;
         
-        for i in 0..self.altitude_change.len() {
+        let min_len = std::cmp::min(self.altitude_change.len(), self.distance_change.len());
+        
+        for i in 0..min_len {
             if self.distance_change[i] > 0.0 {
                 let gradient = (self.altitude_change[i] / self.distance_change[i]) * 100.0;
                 total_segments += 1;
@@ -412,7 +434,12 @@ impl ElevationData {
     fn apply_strict_gradient_capping(&mut self, max_gradient_percent: f64) {
         self.calculate_gradients();
         
-        for i in 0..self.gradient_percent.len() {
+        // FIXED: Ensure we don't exceed array bounds
+        let min_len = self.gradient_percent.len()
+            .min(self.distance_change.len())
+            .min(self.altitude_change.len());
+        
+        for i in 0..min_len {
             if self.distance_change[i] > 0.0 {
                 let capped_gradient = self.gradient_percent[i].max(-max_gradient_percent).min(max_gradient_percent);
                 self.altitude_change[i] = capped_gradient * self.distance_change[i] / 100.0;
@@ -426,14 +453,17 @@ impl ElevationData {
         let mut filtered_changes = vec![0.0];
         let mut cumulative_change = 0.0;
         
+        // FIXED: Ensure we stay within bounds
         for i in 1..self.altitude_change.len() {
-            cumulative_change += self.altitude_change[i];
-            
-            if cumulative_change.abs() >= threshold_meters {
-                filtered_changes.push(cumulative_change);
-                cumulative_change = 0.0;
-            } else {
-                filtered_changes.push(0.0);
+            if i < self.altitude_change.len() {  // Extra safety check
+                cumulative_change += self.altitude_change[i];
+                
+                if cumulative_change.abs() >= threshold_meters {
+                    filtered_changes.push(cumulative_change);
+                    cumulative_change = 0.0;
+                } else {
+                    filtered_changes.push(0.0);
+                }
             }
         }
         
@@ -451,7 +481,8 @@ impl ElevationData {
             let scale_factor = target_gain / current_gain;
             println!("         Scaling positive changes by factor: {:.3}", scale_factor);
             
-            for change in &mut self.altitude_change {
+            // FIXED: Use iterator to avoid bounds issues
+            for change in self.altitude_change.iter_mut() {
                 if *change > 0.0 {
                     *change *= scale_factor;
                 }
@@ -485,7 +516,25 @@ impl ElevationData {
         }
         
         let total_distance = self.cumulative_distance.last().unwrap();
+        
+        // Safety check: prevent creating too many points
+        if interval_meters < 0.1 {
+            println!("      [WARNING] Interval too small: {:.3}m, using minimum 0.1m", interval_meters);
+            return self.resample_to_uniform_distance(0.1);
+        }
+        
         let num_points = (total_distance / interval_meters).ceil() as usize + 1;
+        
+        // Safety check: prevent excessive memory usage
+        if num_points > 1_000_000 {
+            println!("      [ERROR] Would create {} points! Total distance: {:.1}m, interval: {:.3}m", 
+                     num_points, total_distance, interval_meters);
+            println!("      [ERROR] Aborting resampling to prevent memory issues");
+            return (vec![], vec![]);
+        }
+        
+        println!("      [DEBUG] Resampling: {:.1}m total distance, {:.3}m interval = {} points", 
+                 total_distance, interval_meters, num_points);
         
         let mut uniform_distances = Vec::with_capacity(num_points);
         let mut uniform_elevations = Vec::with_capacity(num_points);
@@ -505,12 +554,34 @@ impl ElevationData {
     }
     
     fn interpolate_elevation_at_distance(&self, target_distance: f64) -> f64 {
-        if target_distance <= 0.0 {
-            return self.enhanced_altitude[0];
+        if target_distance <= 0.0 || self.enhanced_altitude.is_empty() {
+            return self.enhanced_altitude.get(0).copied().unwrap_or(0.0);
+        }
+        
+        // Check if we have valid cumulative distances
+        if self.cumulative_distance.is_empty() {
+            return 0.0;
+        }
+        
+        // Check if target is beyond our data
+        if let Some(&last_dist) = self.cumulative_distance.last() {
+            if target_distance >= last_dist {
+                return self.enhanced_altitude.last().copied().unwrap_or(0.0);
+            }
         }
         
         for i in 1..self.cumulative_distance.len() {
+            if i >= self.cumulative_distance.len() || i >= self.enhanced_altitude.len() {
+                // Safety: return last known elevation
+                return self.enhanced_altitude.last().copied().unwrap_or(0.0);
+            }
+            
             if self.cumulative_distance[i] >= target_distance {
+                // Safety checks for array access
+                if i == 0 || i - 1 >= self.cumulative_distance.len() || i - 1 >= self.enhanced_altitude.len() {
+                    return self.enhanced_altitude.get(i).copied().unwrap_or(0.0);
+                }
+                
                 let d1 = self.cumulative_distance[i - 1];
                 let d2 = self.cumulative_distance[i];
                 let e1 = self.enhanced_altitude[i - 1];
@@ -525,7 +596,7 @@ impl ElevationData {
             }
         }
         
-        *self.enhanced_altitude.last().unwrap()
+        self.enhanced_altitude.last().copied().unwrap_or(0.0)
     }
     
     pub fn apply_symmetric_deadband_filtering(&mut self, threshold_meters: f64) {
@@ -619,11 +690,14 @@ impl ElevationData {
 
     /// NEW: Custom interval processing with SYMMETRIC deadband (FIXED VERSION)
     pub fn apply_custom_interval_processing_symmetric(&mut self, interval_meters: f64) {
+        println!("      [DEBUG] Starting symmetric processing with interval: {:.1}m", interval_meters);
+        
         self.calculate_altitude_changes();
         self.calculate_accumulated_ascent_descent();
         self.calculate_overall_gradients();
         
         let hilliness_ratio = self.overall_uphill_gradient;
+        println!("      [DEBUG] Hilliness ratio: {:.1}", hilliness_ratio);
         
         let (deadband_threshold, gaussian_window) = if hilliness_ratio < 20.0 {
             let deadband = match interval_meters as u32 {
@@ -645,11 +719,30 @@ impl ElevationData {
             (deadband, window)
         };
         
-        let (uniform_distances, uniform_elevations) = self.resample_to_uniform_distance(interval_meters);
-        if uniform_elevations.is_empty() { return; }
+        println!("      [DEBUG] Deadband: {:.1}m, Gaussian window: {}", deadband_threshold, gaussian_window);
+        println!("      [DEBUG] Starting resampling...");
         
+        let (uniform_distances, uniform_elevations) = self.resample_to_uniform_distance(interval_meters);
+        if uniform_elevations.is_empty() { 
+            println!("      [DEBUG] No elevations after resampling!");
+            return; 
+        }
+        
+        println!("      [DEBUG] Resampled to {} points", uniform_elevations.len());
+        
+        // Check if resampling created too many points
+        if uniform_elevations.len() > 100000 {
+            println!("      [WARNING] Too many points after resampling: {}", uniform_elevations.len());
+            println!("      [WARNING] This may cause performance issues!");
+        }
+        
+        println!("      [DEBUG] Applying median filter...");
         let median_smoothed = Self::median_filter(&uniform_elevations, 3);
+        
+        println!("      [DEBUG] Applying Gaussian smoothing...");
         let gaussian_smoothed = Self::gaussian_smooth(&median_smoothed, gaussian_window);
+        
+        println!("      [DEBUG] Creating altitude changes...");
         
         // SAFE VERSION: Update data with comprehensive bounds checking
         let mut smoothed_altitude_changes = vec![0.0];
@@ -674,9 +767,16 @@ impl ElevationData {
             self.distance_change[0] = self.cumulative_distance[0];
         }
         
+        println!("      [DEBUG] Applying symmetric deadband filtering...");
         self.apply_symmetric_deadband_filtering(deadband_threshold);
+        
+        println!("      [DEBUG] Calculating gradients...");
         self.calculate_gradients();
+        
+        println!("      [DEBUG] Recalculating accumulated values...");
         self.recalculate_accumulated_values_after_smoothing();
+        
+        println!("      [DEBUG] Symmetric processing complete!");
     }
     
     fn median_filter(data: &[f64], window: usize) -> Vec<f64> {
@@ -686,9 +786,19 @@ impl ElevationData {
             return result;
         }
         
+        // Debug for large datasets
+        if data.len() > 10000 {
+            println!("      [DEBUG] Median filter on {} points...", data.len());
+        }
+        
         let half_window = window / 2;
         
         for i in 0..data.len() {
+            // Progress indicator for large datasets
+            if data.len() > 10000 && i % 5000 == 0 {
+                println!("      [DEBUG] Median filter progress: {}/{}", i, data.len());
+            }
+            
             let start = if i >= half_window { i - half_window } else { 0 };
             let end = std::cmp::min(i + half_window + 1, data.len()); // Use +1 for end to avoid exclusive bound issues
             
@@ -730,10 +840,20 @@ impl ElevationData {
             return result;
         }
         
+        // Debug for large datasets
+        if data.len() > 10000 {
+            println!("      [DEBUG] Gaussian smooth on {} points, window {}", data.len(), window);
+        }
+        
         let sigma = window as f64 / 6.0;
         let half_window = window / 2;
         
         for i in 0..data.len() {
+            // Progress indicator for large datasets
+            if data.len() > 10000 && i % 5000 == 0 {
+                println!("      [DEBUG] Gaussian smooth progress: {}/{}", i, data.len());
+            }
+            
             let start = if i >= half_window { i - half_window } else { 0 };
             let end = std::cmp::min(i + half_window + 1, data.len()); // Use +1 for end to avoid exclusive bound issues
             
@@ -954,9 +1074,12 @@ impl ElevationData {
         let original_total_gain: f64 = self.altitude_change.iter()
             .filter(|&&x| x > 0.0)
             .sum();
-            
-        for i in 0..windowed_changes.len() {
-            if i < self.distance_change.len() && self.distance_change[i] > 0.0 {
+        
+        // FIXED: Ensure we don't exceed array bounds
+        let min_len = windowed_changes.len().min(self.distance_change.len());
+        
+        for i in 0..min_len {
+            if self.distance_change[i] > 0.0 {
                 let gradient_percent = (windowed_changes[i] / self.distance_change[i]) * 100.0;
                 
                 if gradient_percent > max_gradient {
@@ -991,14 +1114,12 @@ impl ElevationData {
         let min_len = std::cmp::min(self.altitude_change.len(), self.distance_change.len());
         
         for i in 0..min_len {
-            if i < self.distance_change.len() && i < self.altitude_change.len() {
-                if self.distance_change[i] == 0.0 {
-                    self.gradient_percent.push(0.0);
-                } else {
-                    self.gradient_percent.push(
-                        (self.altitude_change[i] / self.distance_change[i]) * 100.0
-                    );
-                }
+            if self.distance_change[i] == 0.0 {
+                self.gradient_percent.push(0.0);
+            } else {
+                self.gradient_percent.push(
+                    (self.altitude_change[i] / self.distance_change[i]) * 100.0
+                );
             }
         }
         
