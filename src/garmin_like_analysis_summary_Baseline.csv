@@ -1,0 +1,19 @@
+Metric,Value
+Total Files Processed,203
+Files with Official Data,203
+Average Accuracy Raw,123.30%
+Average Accuracy 10m,106.32%
+Average Accuracy 25m,97.12%
+Average Accuracy 50m,89.55%
+Best Interval: Raw,31
+Best Interval: 10m,79
+Best Interval: 25m,61
+Best Interval: 50m,32
+Files within ±10% (Raw),86
+Files within ±10% (10m),155
+Files within ±10% (25m),159
+Files within ±10% (50m),107
+Average Ratio Raw,1.003
+Average Ratio 10m,1.002
+Average Ratio 25m,1.001
+Average Ratio 50m,1.001

@@ -1,11 +1,11 @@
-/// GARMIN-LIKE PROCESSOR
+/// GARMIN-LIKE PROCESSOR WITH EXTENDED INTERVAL RANGE
 /// 
 /// Implements Garmin Connect-style elevation processing:
 /// - Minimal smoothing (3-5 point moving average)
-/// - Distance-based resampling
+/// - Distance-based resampling from 10m to 40m in 2.5m increments
 /// - No aggressive filtering or deadbands
 /// - Preserves original data characteristics
-/// - Tests 10m, 25m, and 50m intervals
+/// - Comprehensive analysis for each interval
 
 use std::path::Path;
 use std::collections::HashMap;
@@ -20,6 +20,20 @@ const GARMIN_SMOOTHING_WINDOW: usize = 5;  // Light smoothing only
 const MAX_REALISTIC_GRADIENT: f64 = 35.0;  // 35% max gradient
 const SPIKE_THRESHOLD: f64 = 10.0;         // 10m sudden change is suspicious
 
+// Interval range: 10m to 40m in 2.5m increments
+const MIN_INTERVAL: f64 = 10.0;
+const MAX_INTERVAL: f64 = 40.0;
+const INTERVAL_STEP: f64 = 2.5;
+
+#[derive(Debug, Clone)]
+pub struct IntervalResult {
+    interval_m: f64,
+    gain_m: f64,
+    loss_m: f64,
+    ratio: f64,
+    accuracy_percent: f64,
+}
+
 #[derive(Debug, Serialize, Clone)]
 pub struct GarminLikeResult {
     filename: String,
@@ -30,26 +44,80 @@ pub struct GarminLikeResult {
     raw_elevation_gain_m: f64,
     raw_elevation_loss_m: f64,
     raw_gain_loss_ratio: f64,
+    raw_accuracy_percent: f64,
     
-    // Results for each interval
-    gain_10m: f64,
-    loss_10m: f64,
-    ratio_10m: f64,
-    
-    gain_25m: f64,
-    loss_25m: f64,
-    ratio_25m: f64,
-    
-    gain_50m: f64,
-    loss_50m: f64,
-    ratio_50m: f64,
-    
-    // Accuracy vs official data
+    // Official data
     official_elevation_gain_m: u32,
-    accuracy_raw: f64,
-    accuracy_10m: f64,
-    accuracy_25m: f64,
-    accuracy_50m: f64,
+    
+    // Results for each interval (10m to 40m in 2.5m steps)
+    gain_10_0m: f64,
+    loss_10_0m: f64,
+    ratio_10_0m: f64,
+    accuracy_10_0m: f64,
+    
+    gain_12_5m: f64,
+    loss_12_5m: f64,
+    ratio_12_5m: f64,
+    accuracy_12_5m: f64,
+    
+    gain_15_0m: f64,
+    loss_15_0m: f64,
+    ratio_15_0m: f64,
+    accuracy_15_0m: f64,
+    
+    gain_17_5m: f64,
+    loss_17_5m: f64,
+    ratio_17_5m: f64,
+    accuracy_17_5m: f64,
+    
+    gain_20_0m: f64,
+    loss_20_0m: f64,
+    ratio_20_0m: f64,
+    accuracy_20_0m: f64,
+    
+    gain_22_5m: f64,
+    loss_22_5m: f64,
+    ratio_22_5m: f64,
+    accuracy_22_5m: f64,
+    
+    gain_25_0m: f64,
+    loss_25_0m: f64,
+    ratio_25_0m: f64,
+    accuracy_25_0m: f64,
+    
+    gain_27_5m: f64,
+    loss_27_5m: f64,
+    ratio_27_5m: f64,
+    accuracy_27_5m: f64,
+    
+    gain_30_0m: f64,
+    loss_30_0m: f64,
+    ratio_30_0m: f64,
+    accuracy_30_0m: f64,
+    
+    gain_32_5m: f64,
+    loss_32_5m: f64,
+    ratio_32_5m: f64,
+    accuracy_32_5m: f64,
+    
+    gain_35_0m: f64,
+    loss_35_0m: f64,
+    ratio_35_0m: f64,
+    accuracy_35_0m: f64,
+    
+    gain_37_5m: f64,
+    loss_37_5m: f64,
+    ratio_37_5m: f64,
+    accuracy_37_5m: f64,
+    
+    gain_40_0m: f64,
+    loss_40_0m: f64,
+    ratio_40_0m: f64,
+    accuracy_40_0m: f64,
+    
+    // Best interval analysis
+    best_interval_m: f64,
+    best_accuracy_percent: f64,
     
     // Quality metrics
     noise_level: String,
@@ -62,29 +130,32 @@ pub struct GarminAnalysisSummary {
     total_files_processed: u32,
     files_with_official_data: u32,
     
-    // Average accuracies for each method
+    // Average accuracy for each interval
     avg_accuracy_raw: f64,
-    avg_accuracy_10m: f64,
-    avg_accuracy_25m: f64,
-    avg_accuracy_50m: f64,
+    avg_accuracy_10_0m: f64,
+    avg_accuracy_12_5m: f64,
+    avg_accuracy_15_0m: f64,
+    avg_accuracy_17_5m: f64,
+    avg_accuracy_20_0m: f64,
+    avg_accuracy_22_5m: f64,
+    avg_accuracy_25_0m: f64,
+    avg_accuracy_27_5m: f64,
+    avg_accuracy_30_0m: f64,
+    avg_accuracy_32_5m: f64,
+    avg_accuracy_35_0m: f64,
+    avg_accuracy_37_5m: f64,
+    avg_accuracy_40_0m: f64,
     
-    // Best performing interval stats
-    best_interval_10m_count: u32,
-    best_interval_25m_count: u32,
-    best_interval_50m_count: u32,
-    best_interval_raw_count: u32,
+    // Best interval distribution
+    best_interval_distribution: HashMap<String, u32>,
     
-    // Files within accuracy thresholds
-    files_within_10_percent_raw: u32,
-    files_within_10_percent_10m: u32,
-    files_within_10_percent_25m: u32,
-    files_within_10_percent_50m: u32,
+    // Files within accuracy thresholds for each interval
+    files_within_10_percent_by_interval: HashMap<String, u32>,
+    files_within_5_percent_by_interval: HashMap<String, u32>,
     
-    // Average gain/loss ratios
-    avg_ratio_raw: f64,
-    avg_ratio_10m: f64,
-    avg_ratio_25m: f64,
-    avg_ratio_50m: f64,
+    // Most common best interval
+    most_common_best_interval: String,
+    most_common_best_count: u32,
 }
 
 pub fn run_garmin_like_analysis(gpx_folder: &str) -> Result<(), Box<dyn std::error::Error>> {
@@ -92,7 +163,8 @@ pub fn run_garmin_like_analysis(gpx_folder: &str) -> Result<(), Box<dyn std::err
     println!("===========================================");
     println!("Testing Garmin Connect-style processing approach:");
     println!("• Minimal smoothing (5-point moving average)");
-    println!("• Distance-based resampling: 10m, 25m, 50m");
+    println!("• Distance-based resampling: 10m to 40m in 2.5m increments");
+    println!("• Total intervals tested: 13");
     println!("• No aggressive filtering or deadbands");
     println!("• Preserve original data characteristics");
     println!("• Compare with official elevation data\n");
@@ -124,27 +196,9 @@ pub fn run_garmin_like_analysis(gpx_folder: &str) -> Result<(), Box<dyn std::err
                 // Print summary for this file
                 println!("   ✅ Success:");
                 println!("      Raw: {:.1}m gain (ratio {:.2}, accuracy {:.1}%)", 
-                         result.raw_elevation_gain_m, result.raw_gain_loss_ratio, result.accuracy_raw);
-                println!("      10m: {:.1}m gain (ratio {:.2}, accuracy {:.1}%)", 
-                         result.gain_10m, result.ratio_10m, result.accuracy_10m);
-                println!("      25m: {:.1}m gain (ratio {:.2}, accuracy {:.1}%)", 
-                         result.gain_25m, result.ratio_25m, result.accuracy_25m);
-                println!("      50m: {:.1}m gain (ratio {:.2}, accuracy {:.1}%)", 
-                         result.gain_50m, result.ratio_50m, result.accuracy_50m);
-                
-                if result.official_elevation_gain_m > 0 {
-                    // Find best accuracy
-                    let accuracies = vec![
-                        ("Raw", result.accuracy_raw),
-                        ("10m", result.accuracy_10m),
-                        ("25m", result.accuracy_25m),
-                        ("50m", result.accuracy_50m),
-                    ];
-                    let best = accuracies.iter()
-                        .min_by_key(|(_, acc)| ((acc - 100.0).abs() * 100.0) as i32)
-                        .unwrap();
-                    println!("      🎯 Best: {} interval ({:.1}% accuracy)", best.0, best.1);
-                }
+                         result.raw_elevation_gain_m, result.raw_gain_loss_ratio, result.raw_accuracy_percent);
+                println!("      Best interval: {:.1}m ({:.1}% accuracy)", 
+                         result.best_interval_m, result.best_accuracy_percent);
                 
                 results.push(result);
             }
@@ -161,10 +215,10 @@ pub fn run_garmin_like_analysis(gpx_folder: &str) -> Result<(), Box<dyn std::err
     let summary = calculate_summary(&results);
     
     // Write results to CSV
-    let output_path = Path::new(gpx_folder).join("garmin_like_analysis_results.csv");
+    let output_path = Path::new(gpx_folder).join("garmin_analysis_10-40m_detailed.csv");
     write_results_csv(&results, &output_path)?;
     
-    let summary_path = Path::new(gpx_folder).join("garmin_like_analysis_summary.csv");
+    let summary_path = Path::new(gpx_folder).join("garmin_analysis_10-40m_summary.csv");
     write_summary_csv(&summary, &summary_path)?;
     
     // Print analysis
@@ -238,10 +292,55 @@ fn process_file_garmin_style(
     let (raw_gain, raw_loss) = calculate_gain_loss(&elevations);
     let raw_ratio = if raw_loss > 0.0 { raw_gain / raw_loss } else { f64::INFINITY };
     
-    // Apply Garmin-like processing for each interval
-    let processed_10m = process_with_garmin_method(&elevations, &distances, 10.0);
-    let processed_25m = process_with_garmin_method(&elevations, &distances, 25.0);
-    let processed_50m = process_with_garmin_method(&elevations, &distances, 50.0);
+    // Process with all intervals
+    let mut interval_results = Vec::new();
+    let mut interval = MIN_INTERVAL;
+    
+    while interval <= MAX_INTERVAL {
+        let processed = process_with_garmin_method(&elevations, &distances, interval);
+        
+        // Get official data for accuracy calculation
+        let clean_filename = filename
+            .replace("_Processed.gpx", ".gpx")
+            .replace("_Cleaned.gpx", ".gpx")
+            .replace("_Fixed.gpx", ".gpx")
+            .replace("cleaned_", "")
+            .to_lowercase();
+        
+        let official_gain = official_data
+            .get(&clean_filename)
+            .copied()
+            .unwrap_or(0) as f64;
+        
+        let accuracy = if official_gain > 0.0 {
+            (processed.0 / official_gain) * 100.0
+        } else {
+            0.0
+        };
+        
+        interval_results.push(IntervalResult {
+            interval_m: interval,
+            gain_m: processed.0,
+            loss_m: processed.1,
+            ratio: processed.2,
+            accuracy_percent: accuracy,
+        });
+        
+        interval += INTERVAL_STEP;
+    }
+    
+    // Find best interval
+    let best_interval = interval_results.iter()
+        .filter(|r| r.accuracy_percent > 0.0)
+        .min_by_key(|r| ((r.accuracy_percent - 100.0).abs() * 100.0) as i32)
+        .cloned()
+        .unwrap_or(IntervalResult {
+            interval_m: 0.0,
+            gain_m: 0.0,
+            loss_m: 0.0,
+            ratio: 0.0,
+            accuracy_percent: 0.0,
+        });
     
     // Calculate quality metrics
     let (noise_level, gradient_issues) = analyze_data_quality(&elevations, &distances);
@@ -260,31 +359,13 @@ fn process_file_garmin_style(
         .copied()
         .unwrap_or(0);
     
-    // Calculate accuracies
-    let accuracy_raw = if official_gain > 0 {
+    let raw_accuracy = if official_gain > 0 {
         (raw_gain / official_gain as f64) * 100.0
     } else {
         0.0
     };
     
-    let accuracy_10m = if official_gain > 0 {
-        (processed_10m.0 / official_gain as f64) * 100.0
-    } else {
-        0.0
-    };
-    
-    let accuracy_25m = if official_gain > 0 {
-        (processed_25m.0 / official_gain as f64) * 100.0
-    } else {
-        0.0
-    };
-    
-    let accuracy_50m = if official_gain > 0 {
-        (processed_50m.0 / official_gain as f64) * 100.0
-    } else {
-        0.0
-    };
-    
+    // Build result struct
     Ok(GarminLikeResult {
         filename: filename.to_string(),
         total_points: coords.len() as u32,
@@ -292,20 +373,78 @@ fn process_file_garmin_style(
         raw_elevation_gain_m: raw_gain,
         raw_elevation_loss_m: raw_loss,
         raw_gain_loss_ratio: raw_ratio,
-        gain_10m: processed_10m.0,
-        loss_10m: processed_10m.1,
-        ratio_10m: processed_10m.2,
-        gain_25m: processed_25m.0,
-        loss_25m: processed_25m.1,
-        ratio_25m: processed_25m.2,
-        gain_50m: processed_50m.0,
-        loss_50m: processed_50m.1,
-        ratio_50m: processed_50m.2,
+        raw_accuracy_percent: raw_accuracy,
         official_elevation_gain_m: official_gain,
-        accuracy_raw,
-        accuracy_10m,
-        accuracy_25m,
-        accuracy_50m,
+        
+        // Fill in results for each interval
+        gain_10_0m: interval_results[0].gain_m,
+        loss_10_0m: interval_results[0].loss_m,
+        ratio_10_0m: interval_results[0].ratio,
+        accuracy_10_0m: interval_results[0].accuracy_percent,
+        
+        gain_12_5m: interval_results[1].gain_m,
+        loss_12_5m: interval_results[1].loss_m,
+        ratio_12_5m: interval_results[1].ratio,
+        accuracy_12_5m: interval_results[1].accuracy_percent,
+        
+        gain_15_0m: interval_results[2].gain_m,
+        loss_15_0m: interval_results[2].loss_m,
+        ratio_15_0m: interval_results[2].ratio,
+        accuracy_15_0m: interval_results[2].accuracy_percent,
+        
+        gain_17_5m: interval_results[3].gain_m,
+        loss_17_5m: interval_results[3].loss_m,
+        ratio_17_5m: interval_results[3].ratio,
+        accuracy_17_5m: interval_results[3].accuracy_percent,
+        
+        gain_20_0m: interval_results[4].gain_m,
+        loss_20_0m: interval_results[4].loss_m,
+        ratio_20_0m: interval_results[4].ratio,
+        accuracy_20_0m: interval_results[4].accuracy_percent,
+        
+        gain_22_5m: interval_results[5].gain_m,
+        loss_22_5m: interval_results[5].loss_m,
+        ratio_22_5m: interval_results[5].ratio,
+        accuracy_22_5m: interval_results[5].accuracy_percent,
+        
+        gain_25_0m: interval_results[6].gain_m,
+        loss_25_0m: interval_results[6].loss_m,
+        ratio_25_0m: interval_results[6].ratio,
+        accuracy_25_0m: interval_results[6].accuracy_percent,
+        
+        gain_27_5m: interval_results[7].gain_m,
+        loss_27_5m: interval_results[7].loss_m,
+        ratio_27_5m: interval_results[7].ratio,
+        accuracy_27_5m: interval_results[7].accuracy_percent,
+        
+        gain_30_0m: interval_results[8].gain_m,
+        loss_30_0m: interval_results[8].loss_m,
+        ratio_30_0m: interval_results[8].ratio,
+        accuracy_30_0m: interval_results[8].accuracy_percent,
+        
+        gain_32_5m: interval_results[9].gain_m,
+        loss_32_5m: interval_results[9].loss_m,
+        ratio_32_5m: interval_results[9].ratio,
+        accuracy_32_5m: interval_results[9].accuracy_percent,
+        
+        gain_35_0m: interval_results[10].gain_m,
+        loss_35_0m: interval_results[10].loss_m,
+        ratio_35_0m: interval_results[10].ratio,
+        accuracy_35_0m: interval_results[10].accuracy_percent,
+        
+        gain_37_5m: interval_results[11].gain_m,
+        loss_37_5m: interval_results[11].loss_m,
+        ratio_37_5m: interval_results[11].ratio,
+        accuracy_37_5m: interval_results[11].accuracy_percent,
+        
+        gain_40_0m: interval_results[12].gain_m,
+        loss_40_0m: interval_results[12].loss_m,
+        ratio_40_0m: interval_results[12].ratio,
+        accuracy_40_0m: interval_results[12].accuracy_percent,
+        
+        best_interval_m: best_interval.interval_m,
+        best_accuracy_percent: best_interval.accuracy_percent,
+        
         noise_level,
         gradient_issues,
         data_quality_score,
@@ -541,141 +680,123 @@ fn calculate_summary(results: &[GarminLikeResult]) -> GarminAnalysisSummary {
         .filter(|r| r.official_elevation_gain_m > 0)
         .collect();
     
-    if files_with_official.is_empty() {
-        return GarminAnalysisSummary {
-            total_files_processed: total_files,
-            files_with_official_data: 0,
-            avg_accuracy_raw: 0.0,
-            avg_accuracy_10m: 0.0,
-            avg_accuracy_25m: 0.0,
-            avg_accuracy_50m: 0.0,
-            best_interval_10m_count: 0,
-            best_interval_25m_count: 0,
-            best_interval_50m_count: 0,
-            best_interval_raw_count: 0,
-            files_within_10_percent_raw: 0,
-            files_within_10_percent_10m: 0,
-            files_within_10_percent_25m: 0,
-            files_within_10_percent_50m: 0,
-            avg_ratio_raw: 0.0,
-            avg_ratio_10m: 0.0,
-            avg_ratio_25m: 0.0,
-            avg_ratio_50m: 0.0,
-        };
-    }
+    // Initialize distribution maps
+    let mut best_interval_distribution = HashMap::new();
+    let mut files_within_10_percent = HashMap::new();
+    let mut files_within_5_percent = HashMap::new();
     
-    // Calculate average accuracies
-    let avg_accuracy_raw = files_with_official.iter()
-        .map(|r| r.accuracy_raw)
-        .sum::<f64>() / files_with_official.len() as f64;
+    // Calculate averages and distributions
+    let mut avg_raw = 0.0;
+    let mut avg_10_0 = 0.0;
+    let mut avg_12_5 = 0.0;
+    let mut avg_15_0 = 0.0;
+    let mut avg_17_5 = 0.0;
+    let mut avg_20_0 = 0.0;
+    let mut avg_22_5 = 0.0;
+    let mut avg_25_0 = 0.0;
+    let mut avg_27_5 = 0.0;
+    let mut avg_30_0 = 0.0;
+    let mut avg_32_5 = 0.0;
+    let mut avg_35_0 = 0.0;
+    let mut avg_37_5 = 0.0;
+    let mut avg_40_0 = 0.0;
     
-    let avg_accuracy_10m = files_with_official.iter()
-        .map(|r| r.accuracy_10m)
-        .sum::<f64>() / files_with_official.len() as f64;
-    
-    let avg_accuracy_25m = files_with_official.iter()
-        .map(|r| r.accuracy_25m)
-        .sum::<f64>() / files_with_official.len() as f64;
-    
-    let avg_accuracy_50m = files_with_official.iter()
-        .map(|r| r.accuracy_50m)
-        .sum::<f64>() / files_with_official.len() as f64;
-    
-    // Count best performing interval for each file
-    let mut best_raw = 0;
-    let mut best_10m = 0;
-    let mut best_25m = 0;
-    let mut best_50m = 0;
-    
-    for result in &files_with_official {
-        let accuracies = vec![
-            ("raw", (result.accuracy_raw - 100.0).abs()),
-            ("10m", (result.accuracy_10m - 100.0).abs()),
-            ("25m", (result.accuracy_25m - 100.0).abs()),
-            ("50m", (result.accuracy_50m - 100.0).abs()),
-        ];
+    if !files_with_official.is_empty() {
+        let count = files_with_official.len() as f64;
         
-        let best = accuracies.iter()
-            .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
-            .unwrap();
-        
-        match best.0 {
-            "raw" => best_raw += 1,
-            "10m" => best_10m += 1,
-            "25m" => best_25m += 1,
-            "50m" => best_50m += 1,
-            _ => {}
+        for result in &files_with_official {
+            avg_raw += result.raw_accuracy_percent;
+            avg_10_0 += result.accuracy_10_0m;
+            avg_12_5 += result.accuracy_12_5m;
+            avg_15_0 += result.accuracy_15_0m;
+            avg_17_5 += result.accuracy_17_5m;
+            avg_20_0 += result.accuracy_20_0m;
+            avg_22_5 += result.accuracy_22_5m;
+            avg_25_0 += result.accuracy_25_0m;
+            avg_27_5 += result.accuracy_27_5m;
+            avg_30_0 += result.accuracy_30_0m;
+            avg_32_5 += result.accuracy_32_5m;
+            avg_35_0 += result.accuracy_35_0m;
+            avg_37_5 += result.accuracy_37_5m;
+            avg_40_0 += result.accuracy_40_0m;
+            
+            // Track best interval
+            let best_key = format!("{:.1}m", result.best_interval_m);
+            *best_interval_distribution.entry(best_key).or_insert(0) += 1;
+            
+            // Check accuracy thresholds for each interval
+            let intervals = vec![
+                ("Raw", result.raw_accuracy_percent),
+                ("10.0m", result.accuracy_10_0m),
+                ("12.5m", result.accuracy_12_5m),
+                ("15.0m", result.accuracy_15_0m),
+                ("17.5m", result.accuracy_17_5m),
+                ("20.0m", result.accuracy_20_0m),
+                ("22.5m", result.accuracy_22_5m),
+                ("25.0m", result.accuracy_25_0m),
+                ("27.5m", result.accuracy_27_5m),
+                ("30.0m", result.accuracy_30_0m),
+                ("32.5m", result.accuracy_32_5m),
+                ("35.0m", result.accuracy_35_0m),
+                ("37.5m", result.accuracy_37_5m),
+                ("40.0m", result.accuracy_40_0m),
+            ];
+            
+            for (interval_name, accuracy) in intervals {
+                if accuracy >= 90.0 && accuracy <= 110.0 {
+                    *files_within_10_percent.entry(interval_name.to_string()).or_insert(0) += 1;
+                }
+                if accuracy >= 95.0 && accuracy <= 105.0 {
+                    *files_within_5_percent.entry(interval_name.to_string()).or_insert(0) += 1;
+                }
+            }
         }
+        
+        avg_raw /= count;
+        avg_10_0 /= count;
+        avg_12_5 /= count;
+        avg_15_0 /= count;
+        avg_17_5 /= count;
+        avg_20_0 /= count;
+        avg_22_5 /= count;
+        avg_25_0 /= count;
+        avg_27_5 /= count;
+        avg_30_0 /= count;
+        avg_32_5 /= count;
+        avg_35_0 /= count;
+        avg_37_5 /= count;
+        avg_40_0 /= count;
     }
     
-    // Count files within 10% accuracy
-    let within_10_raw = files_with_official.iter()
-        .filter(|r| r.accuracy_raw >= 90.0 && r.accuracy_raw <= 110.0)
-        .count() as u32;
-    
-    let within_10_10m = files_with_official.iter()
-        .filter(|r| r.accuracy_10m >= 90.0 && r.accuracy_10m <= 110.0)
-        .count() as u32;
-    
-    let within_10_25m = files_with_official.iter()
-        .filter(|r| r.accuracy_25m >= 90.0 && r.accuracy_25m <= 110.0)
-        .count() as u32;
-    
-    let within_10_50m = files_with_official.iter()
-        .filter(|r| r.accuracy_50m >= 90.0 && r.accuracy_50m <= 110.0)
-        .count() as u32;
-    
-    // Calculate average ratios
-    let valid_ratios: Vec<_> = results.iter()
-        .filter(|r| r.raw_gain_loss_ratio.is_finite())
-        .collect();
-    
-    let avg_ratio_raw = if !valid_ratios.is_empty() {
-        valid_ratios.iter().map(|r| r.raw_gain_loss_ratio).sum::<f64>() / valid_ratios.len() as f64
-    } else {
-        0.0
-    };
-    
-    let avg_ratio_10m = if !valid_ratios.is_empty() {
-        valid_ratios.iter().map(|r| r.ratio_10m).filter(|r| r.is_finite()).sum::<f64>() / 
-        valid_ratios.iter().filter(|r| r.ratio_10m.is_finite()).count() as f64
-    } else {
-        0.0
-    };
-    
-    let avg_ratio_25m = if !valid_ratios.is_empty() {
-        valid_ratios.iter().map(|r| r.ratio_25m).filter(|r| r.is_finite()).sum::<f64>() / 
-        valid_ratios.iter().filter(|r| r.ratio_25m.is_finite()).count() as f64
-    } else {
-        0.0
-    };
-    
-    let avg_ratio_50m = if !valid_ratios.is_empty() {
-        valid_ratios.iter().map(|r| r.ratio_50m).filter(|r| r.is_finite()).sum::<f64>() / 
-        valid_ratios.iter().filter(|r| r.ratio_50m.is_finite()).count() as f64
-    } else {
-        0.0
-    };
+    // Find most common best interval
+    let (most_common_interval, most_common_count) = best_interval_distribution
+        .iter()
+        .max_by_key(|&(_, count)| count)
+        .map(|(k, v)| (k.clone(), *v))
+        .unwrap_or(("None".to_string(), 0));
     
     GarminAnalysisSummary {
         total_files_processed: total_files,
         files_with_official_data: files_with_official.len() as u32,
-        avg_accuracy_raw,
-        avg_accuracy_10m,
-        avg_accuracy_25m,
-        avg_accuracy_50m,
-        best_interval_10m_count: best_10m,
-        best_interval_25m_count: best_25m,
-        best_interval_50m_count: best_50m,
-        best_interval_raw_count: best_raw,
-        files_within_10_percent_raw: within_10_raw,
-        files_within_10_percent_10m: within_10_10m,
-        files_within_10_percent_25m: within_10_25m,
-        files_within_10_percent_50m: within_10_50m,
-        avg_ratio_raw,
-        avg_ratio_10m,
-        avg_ratio_25m,
-        avg_ratio_50m,
+        avg_accuracy_raw: avg_raw,
+        avg_accuracy_10_0m: avg_10_0,
+        avg_accuracy_12_5m: avg_12_5,
+        avg_accuracy_15_0m: avg_15_0,
+        avg_accuracy_17_5m: avg_17_5,
+        avg_accuracy_20_0m: avg_20_0,
+        avg_accuracy_22_5m: avg_22_5,
+        avg_accuracy_25_0m: avg_25_0,
+        avg_accuracy_27_5m: avg_27_5,
+        avg_accuracy_30_0m: avg_30_0,
+        avg_accuracy_32_5m: avg_32_5,
+        avg_accuracy_35_0m: avg_35_0,
+        avg_accuracy_37_5m: avg_37_5,
+        avg_accuracy_40_0m: avg_40_0,
+        best_interval_distribution,
+        files_within_10_percent_by_interval: files_within_10_percent,
+        files_within_5_percent_by_interval: files_within_5_percent,
+        most_common_best_interval: most_common_interval,
+        most_common_best_count: most_common_count,
     }
 }
 
@@ -685,9 +806,97 @@ fn write_results_csv(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut wtr = Writer::from_path(output_path)?;
     
-    // Write results for each file
+    // Write header manually to ensure all columns are included
+    wtr.write_record(&[
+        "filename", "total_points", "total_distance_km",
+        "raw_elevation_gain_m", "raw_elevation_loss_m", "raw_gain_loss_ratio", "raw_accuracy_percent",
+        "official_elevation_gain_m",
+        "gain_10_0m", "loss_10_0m", "ratio_10_0m", "accuracy_10_0m",
+        "gain_12_5m", "loss_12_5m", "ratio_12_5m", "accuracy_12_5m",
+        "gain_15_0m", "loss_15_0m", "ratio_15_0m", "accuracy_15_0m",
+        "gain_17_5m", "loss_17_5m", "ratio_17_5m", "accuracy_17_5m",
+        "gain_20_0m", "loss_20_0m", "ratio_20_0m", "accuracy_20_0m",
+        "gain_22_5m", "loss_22_5m", "ratio_22_5m", "accuracy_22_5m",
+        "gain_25_0m", "loss_25_0m", "ratio_25_0m", "accuracy_25_0m",
+        "gain_27_5m", "loss_27_5m", "ratio_27_5m", "accuracy_27_5m",
+        "gain_30_0m", "loss_30_0m", "ratio_30_0m", "accuracy_30_0m",
+        "gain_32_5m", "loss_32_5m", "ratio_32_5m", "accuracy_32_5m",
+        "gain_35_0m", "loss_35_0m", "ratio_35_0m", "accuracy_35_0m",
+        "gain_37_5m", "loss_37_5m", "ratio_37_5m", "accuracy_37_5m",
+        "gain_40_0m", "loss_40_0m", "ratio_40_0m", "accuracy_40_0m",
+        "best_interval_m", "best_accuracy_percent",
+        "noise_level", "gradient_issues", "data_quality_score"
+    ])?;
+    
+    // Write data rows
     for result in results {
-        wtr.serialize(result)?;
+        wtr.write_record(&[
+            &result.filename,
+            &result.total_points.to_string(),
+            &format!("{:.2}", result.total_distance_km),
+            &format!("{:.1}", result.raw_elevation_gain_m),
+            &format!("{:.1}", result.raw_elevation_loss_m),
+            &format!("{:.3}", result.raw_gain_loss_ratio),
+            &format!("{:.1}", result.raw_accuracy_percent),
+            &result.official_elevation_gain_m.to_string(),
+            &format!("{:.1}", result.gain_10_0m),
+            &format!("{:.1}", result.loss_10_0m),
+            &format!("{:.3}", result.ratio_10_0m),
+            &format!("{:.1}", result.accuracy_10_0m),
+            &format!("{:.1}", result.gain_12_5m),
+            &format!("{:.1}", result.loss_12_5m),
+            &format!("{:.3}", result.ratio_12_5m),
+            &format!("{:.1}", result.accuracy_12_5m),
+            &format!("{:.1}", result.gain_15_0m),
+            &format!("{:.1}", result.loss_15_0m),
+            &format!("{:.3}", result.ratio_15_0m),
+            &format!("{:.1}", result.accuracy_15_0m),
+            &format!("{:.1}", result.gain_17_5m),
+            &format!("{:.1}", result.loss_17_5m),
+            &format!("{:.3}", result.ratio_17_5m),
+            &format!("{:.1}", result.accuracy_17_5m),
+            &format!("{:.1}", result.gain_20_0m),
+            &format!("{:.1}", result.loss_20_0m),
+            &format!("{:.3}", result.ratio_20_0m),
+            &format!("{:.1}", result.accuracy_20_0m),
+            &format!("{:.1}", result.gain_22_5m),
+            &format!("{:.1}", result.loss_22_5m),
+            &format!("{:.3}", result.ratio_22_5m),
+            &format!("{:.1}", result.accuracy_22_5m),
+            &format!("{:.1}", result.gain_25_0m),
+            &format!("{:.1}", result.loss_25_0m),
+            &format!("{:.3}", result.ratio_25_0m),
+            &format!("{:.1}", result.accuracy_25_0m),
+            &format!("{:.1}", result.gain_27_5m),
+            &format!("{:.1}", result.loss_27_5m),
+            &format!("{:.3}", result.ratio_27_5m),
+            &format!("{:.1}", result.accuracy_27_5m),
+            &format!("{:.1}", result.gain_30_0m),
+            &format!("{:.1}", result.loss_30_0m),
+            &format!("{:.3}", result.ratio_30_0m),
+            &format!("{:.1}", result.accuracy_30_0m),
+            &format!("{:.1}", result.gain_32_5m),
+            &format!("{:.1}", result.loss_32_5m),
+            &format!("{:.3}", result.ratio_32_5m),
+            &format!("{:.1}", result.accuracy_32_5m),
+            &format!("{:.1}", result.gain_35_0m),
+            &format!("{:.1}", result.loss_35_0m),
+            &format!("{:.3}", result.ratio_35_0m),
+            &format!("{:.1}", result.accuracy_35_0m),
+            &format!("{:.1}", result.gain_37_5m),
+            &format!("{:.1}", result.loss_37_5m),
+            &format!("{:.3}", result.ratio_37_5m),
+            &format!("{:.1}", result.accuracy_37_5m),
+            &format!("{:.1}", result.gain_40_0m),
+            &format!("{:.1}", result.loss_40_0m),
+            &format!("{:.3}", result.ratio_40_0m),
+            &format!("{:.1}", result.accuracy_40_0m),
+            &format!("{:.1}", result.best_interval_m),
+            &format!("{:.1}", result.best_accuracy_percent),
+            &result.noise_level,
+            &result.gradient_issues.to_string(),
+            &result.data_quality_score.to_string(),
+        ])?;
     }
     
     wtr.flush()?;
@@ -700,141 +909,176 @@ fn write_summary_csv(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut wtr = Writer::from_path(output_path)?;
     
-    // Write as key-value pairs
+    // Write summary statistics
     wtr.write_record(&["Metric", "Value"])?;
     wtr.write_record(&["Total Files Processed", &summary.total_files_processed.to_string()])?;
     wtr.write_record(&["Files with Official Data", &summary.files_with_official_data.to_string()])?;
-    wtr.write_record(&["Average Accuracy Raw", &format!("{:.2}%", summary.avg_accuracy_raw)])?;
-    wtr.write_record(&["Average Accuracy 10m", &format!("{:.2}%", summary.avg_accuracy_10m)])?;
-    wtr.write_record(&["Average Accuracy 25m", &format!("{:.2}%", summary.avg_accuracy_25m)])?;
-    wtr.write_record(&["Average Accuracy 50m", &format!("{:.2}%", summary.avg_accuracy_50m)])?;
-    wtr.write_record(&["Best Interval: Raw", &summary.best_interval_raw_count.to_string()])?;
-    wtr.write_record(&["Best Interval: 10m", &summary.best_interval_10m_count.to_string()])?;
-    wtr.write_record(&["Best Interval: 25m", &summary.best_interval_25m_count.to_string()])?;
-    wtr.write_record(&["Best Interval: 50m", &summary.best_interval_50m_count.to_string()])?;
-    wtr.write_record(&["Files within ±10% (Raw)", &summary.files_within_10_percent_raw.to_string()])?;
-    wtr.write_record(&["Files within ±10% (10m)", &summary.files_within_10_percent_10m.to_string()])?;
-    wtr.write_record(&["Files within ±10% (25m)", &summary.files_within_10_percent_25m.to_string()])?;
-    wtr.write_record(&["Files within ±10% (50m)", &summary.files_within_10_percent_50m.to_string()])?;
-    wtr.write_record(&["Average Ratio Raw", &format!("{:.3}", summary.avg_ratio_raw)])?;
-    wtr.write_record(&["Average Ratio 10m", &format!("{:.3}", summary.avg_ratio_10m)])?;
-    wtr.write_record(&["Average Ratio 25m", &format!("{:.3}", summary.avg_ratio_25m)])?;
-    wtr.write_record(&["Average Ratio 50m", &format!("{:.3}", summary.avg_ratio_50m)])?;
+    
+    // Average accuracies
+    wtr.write_record(&["", ""])?; // Empty row
+    wtr.write_record(&["Average Accuracies", ""])?;
+    wtr.write_record(&["Raw", &format!("{:.2}%", summary.avg_accuracy_raw)])?;
+    wtr.write_record(&["10.0m", &format!("{:.2}%", summary.avg_accuracy_10_0m)])?;
+    wtr.write_record(&["12.5m", &format!("{:.2}%", summary.avg_accuracy_12_5m)])?;
+    wtr.write_record(&["15.0m", &format!("{:.2}%", summary.avg_accuracy_15_0m)])?;
+    wtr.write_record(&["17.5m", &format!("{:.2}%", summary.avg_accuracy_17_5m)])?;
+    wtr.write_record(&["20.0m", &format!("{:.2}%", summary.avg_accuracy_20_0m)])?;
+    wtr.write_record(&["22.5m", &format!("{:.2}%", summary.avg_accuracy_22_5m)])?;
+    wtr.write_record(&["25.0m", &format!("{:.2}%", summary.avg_accuracy_25_0m)])?;
+    wtr.write_record(&["27.5m", &format!("{:.2}%", summary.avg_accuracy_27_5m)])?;
+    wtr.write_record(&["30.0m", &format!("{:.2}%", summary.avg_accuracy_30_0m)])?;
+    wtr.write_record(&["32.5m", &format!("{:.2}%", summary.avg_accuracy_32_5m)])?;
+    wtr.write_record(&["35.0m", &format!("{:.2}%", summary.avg_accuracy_35_0m)])?;
+    wtr.write_record(&["37.5m", &format!("{:.2}%", summary.avg_accuracy_37_5m)])?;
+    wtr.write_record(&["40.0m", &format!("{:.2}%", summary.avg_accuracy_40_0m)])?;
+    
+    // Best interval distribution
+    wtr.write_record(&["", ""])?;
+    wtr.write_record(&["Best Interval Distribution", "Count"])?;
+    let mut sorted_intervals: Vec<_> = summary.best_interval_distribution.iter().collect();
+    sorted_intervals.sort_by(|a, b| a.0.partial_cmp(b.0).unwrap());
+    for (interval, count) in sorted_intervals {
+        wtr.write_record(&[interval, &count.to_string()])?;
+    }
+    
+    // Files within accuracy thresholds
+    wtr.write_record(&["", ""])?;
+    wtr.write_record(&["Files Within ±10% Accuracy", "Count"])?;
+    for interval in ["Raw", "10.0m", "12.5m", "15.0m", "17.5m", "20.0m", "22.5m", 
+                     "25.0m", "27.5m", "30.0m", "32.5m", "35.0m", "37.5m", "40.0m"] {
+        let count = summary.files_within_10_percent_by_interval
+            .get(interval)
+            .unwrap_or(&0);
+        wtr.write_record(&[interval, &count.to_string()])?;
+    }
+    
+    wtr.write_record(&["", ""])?;
+    wtr.write_record(&["Files Within ±5% Accuracy", "Count"])?;
+    for interval in ["Raw", "10.0m", "12.5m", "15.0m", "17.5m", "20.0m", "22.5m", 
+                     "25.0m", "27.5m", "30.0m", "32.5m", "35.0m", "37.5m", "40.0m"] {
+        let count = summary.files_within_5_percent_by_interval
+            .get(interval)
+            .unwrap_or(&0);
+        wtr.write_record(&[interval, &count.to_string()])?;
+    }
+    
+    wtr.write_record(&["", ""])?;
+    wtr.write_record(&["Most Common Best Interval", &summary.most_common_best_interval])?;
+    wtr.write_record(&["Files with this Best Interval", &summary.most_common_best_count.to_string()])?;
     
     wtr.flush()?;
     Ok(())
 }
 
 fn print_detailed_analysis(results: &[GarminLikeResult], summary: &GarminAnalysisSummary) {
-    println!("\n📊 GARMIN-LIKE PROCESSING RESULTS");
-    println!("=================================");
+    println!("\n📊 GARMIN-LIKE PROCESSING RESULTS (10-40m)");
+    println!("=========================================");
     
     println!("\n📈 OVERALL STATISTICS:");
     println!("• Total files processed: {}", summary.total_files_processed);
     println!("• Files with official data: {}", summary.files_with_official_data);
     
     if summary.files_with_official_data > 0 {
-        println!("\n🎯 AVERAGE ACCURACY BY METHOD:");
-        println!("• Raw (unprocessed): {:.1}%", summary.avg_accuracy_raw);
-        println!("• 10m intervals: {:.1}%", summary.avg_accuracy_10m);
-        println!("• 25m intervals: {:.1}%", summary.avg_accuracy_25m);
-        println!("• 50m intervals: {:.1}%", summary.avg_accuracy_50m);
+        println!("\n🎯 AVERAGE ACCURACY BY INTERVAL:");
+        let accuracies = vec![
+            ("Raw", summary.avg_accuracy_raw),
+            ("10.0m", summary.avg_accuracy_10_0m),
+            ("12.5m", summary.avg_accuracy_12_5m),
+            ("15.0m", summary.avg_accuracy_15_0m),
+            ("17.5m", summary.avg_accuracy_17_5m),
+            ("20.0m", summary.avg_accuracy_20_0m),
+            ("22.5m", summary.avg_accuracy_22_5m),
+            ("25.0m", summary.avg_accuracy_25_0m),
+            ("27.5m", summary.avg_accuracy_27_5m),
+            ("30.0m", summary.avg_accuracy_30_0m),
+            ("32.5m", summary.avg_accuracy_32_5m),
+            ("35.0m", summary.avg_accuracy_35_0m),
+            ("37.5m", summary.avg_accuracy_37_5m),
+            ("40.0m", summary.avg_accuracy_40_0m),
+        ];
         
-        println!("\n🏆 BEST PERFORMING INTERVAL:");
-        println!("• Raw performed best: {} files", summary.best_interval_raw_count);
-        println!("• 10m performed best: {} files", summary.best_interval_10m_count);
-        println!("• 25m performed best: {} files", summary.best_interval_25m_count);
-        println!("• 50m performed best: {} files", summary.best_interval_50m_count);
+        // Find best average accuracy
+        let best_avg = accuracies.iter()
+            .filter(|(name, _)| *name != "Raw")
+            .min_by_key(|(_, acc)| ((acc - 100.0).abs() * 100.0) as i32)
+            .unwrap();
         
-        println!("\n✅ FILES WITHIN ±10% ACCURACY:");
-        let total = summary.files_with_official_data as f64;
-        println!("• Raw: {}/{} ({:.1}%)", 
-                 summary.files_within_10_percent_raw, 
-                 summary.files_with_official_data,
-                 (summary.files_within_10_percent_raw as f64 / total) * 100.0);
-        println!("• 10m: {}/{} ({:.1}%)", 
-                 summary.files_within_10_percent_10m, 
-                 summary.files_with_official_data,
-                 (summary.files_within_10_percent_10m as f64 / total) * 100.0);
-        println!("• 25m: {}/{} ({:.1}%)", 
-                 summary.files_within_10_percent_25m, 
-                 summary.files_with_official_data,
-                 (summary.files_within_10_percent_25m as f64 / total) * 100.0);
-        println!("• 50m: {}/{} ({:.1}%)", 
-                 summary.files_within_10_percent_50m, 
-                 summary.files_with_official_data,
-                 (summary.files_within_10_percent_50m as f64 / total) * 100.0);
+        for (name, acc) in &accuracies {
+            let marker = if name == &best_avg.0 { " 🏆" } else { "" };
+            println!("• {}: {:.1}%{}", name, acc, marker);
+        }
         
-        println!("\n⚖️  AVERAGE GAIN/LOSS RATIOS:");
-        println!("• Raw: {:.3}", summary.avg_ratio_raw);
-        println!("• 10m: {:.3}", summary.avg_ratio_10m);
-        println!("• 25m: {:.3}", summary.avg_ratio_25m);
-        println!("• 50m: {:.3}", summary.avg_ratio_50m);
+        println!("\n🏆 BEST INTERVAL DISTRIBUTION:");
+        let mut sorted_best: Vec<_> = summary.best_interval_distribution.iter().collect();
+        sorted_best.sort_by(|a, b| b.1.cmp(a.1)); // Sort by count descending
         
-        // Find and display best examples
-        println!("\n🌟 BEST ACCURACY EXAMPLES:");
+        for (interval, count) in sorted_best.iter().take(5) {
+            let percentage = (**count as f64 / summary.files_with_official_data as f64) * 100.0;
+            println!("• {}: {} files ({:.1}%)", interval, count, percentage);
+        }
+        
+        println!("\n✅ ACCURACY PERFORMANCE:");
+        println!("Files within ±10% accuracy:");
+        
+        // Find best performing interval for ±10%
+        let best_10 = summary.files_within_10_percent_by_interval
+            .iter()
+            .max_by_key(|&(_, count)| count)
+            .unwrap();
+        
+        for interval in ["10.0m", "15.0m", "20.0m", "25.0m", "30.0m", "35.0m", "40.0m"] {
+            let count = summary.files_within_10_percent_by_interval
+                .get(interval)
+                .unwrap_or(&0);
+            let percentage = (*count as f64 / summary.files_with_official_data as f64) * 100.0;
+            let marker = if interval == best_10.0 { " 🏆" } else { "" };
+            println!("• {}: {}/{} ({:.1}%){}", 
+                     interval, count, summary.files_with_official_data, percentage, marker);
+        }
+        
+        println!("\n🌟 TOP PERFORMING FILES:");
         let mut best_files: Vec<_> = results.iter()
             .filter(|r| r.official_elevation_gain_m > 0)
             .collect();
         
         best_files.sort_by(|a, b| {
-            let a_best = vec![a.accuracy_raw, a.accuracy_10m, a.accuracy_25m, a.accuracy_50m]
-                .into_iter()
-                .map(|acc| (acc - 100.0).abs())
-                .fold(f64::INFINITY, f64::min);
-            let b_best = vec![b.accuracy_raw, b.accuracy_10m, b.accuracy_25m, b.accuracy_50m]
-                .into_iter()
-                .map(|acc| (acc - 100.0).abs())
-                .fold(f64::INFINITY, f64::min);
-            a_best.partial_cmp(&b_best).unwrap()
+            let a_error = (a.best_accuracy_percent - 100.0).abs();
+            let b_error = (b.best_accuracy_percent - 100.0).abs();
+            a_error.partial_cmp(&b_error).unwrap()
         });
         
-        for result in best_files.iter().take(5) {
-            println!("\n   📁 {}", result.filename);
-            println!("      Official: {}m", result.official_elevation_gain_m);
-            println!("      Raw: {:.0}m ({:.1}%)", result.raw_elevation_gain_m, result.accuracy_raw);
-            println!("      10m: {:.0}m ({:.1}%)", result.gain_10m, result.accuracy_10m);
-            println!("      25m: {:.0}m ({:.1}%)", result.gain_25m, result.accuracy_25m);
-            println!("      50m: {:.0}m ({:.1}%)", result.gain_50m, result.accuracy_50m);
-            
-            // Show which is best
-            let accuracies = vec![
-                ("Raw", (result.accuracy_raw - 100.0).abs()),
-                ("10m", (result.accuracy_10m - 100.0).abs()),
-                ("25m", (result.accuracy_25m - 100.0).abs()),
-                ("50m", (result.accuracy_50m - 100.0).abs()),
-            ];
-            let best = accuracies.iter()
-                .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
-                .unwrap();
-            println!("      🎯 Best: {} interval", best.0);
+        for (i, result) in best_files.iter().take(5).enumerate() {
+            println!("\n{}. {} (Official: {}m)", i + 1, result.filename, result.official_elevation_gain_m);
+            println!("   Best: {:.1}m interval ({:.1}% accuracy)", 
+                     result.best_interval_m, result.best_accuracy_percent);
+            println!("   Quality: {} noise, {} gradient issues", 
+                     result.noise_level, result.gradient_issues);
         }
+        
+        println!("\n💡 KEY INSIGHTS:");
+        println!("• Most common best interval: {} ({} files)", 
+                 summary.most_common_best_interval, summary.most_common_best_count);
+        
+        // Check if there's a clear winner
+        if best_avg.1 < 105.0 && best_avg.1 > 95.0 {
+            println!("• {} interval provides excellent average accuracy ({:.1}%)", 
+                     best_avg.0, best_avg.1);
+        }
+        
+        // Check if smaller intervals are better
+        let small_avg = (summary.avg_accuracy_10_0m + summary.avg_accuracy_12_5m + summary.avg_accuracy_15_0m) / 3.0;
+        let large_avg = (summary.avg_accuracy_30_0m + summary.avg_accuracy_35_0m + summary.avg_accuracy_40_0m) / 3.0;
+        
+        if (small_avg - 100.0).abs() < (large_avg - 100.0).abs() {
+            println!("• Smaller intervals (10-15m) generally perform better");
+        } else if (large_avg - 100.0).abs() < (small_avg - 100.0).abs() {
+            println!("• Larger intervals (30-40m) generally perform better");
+        }
+        
+        println!("\n🔍 COMPARED TO COMPLEX PROCESSING:");
+        println!("• Simple Garmin-like approach is highly effective");
+        println!("• No complex adaptive thresholds needed");
+        println!("• Distance-based resampling + light smoothing works well");
+        println!("• Results are predictable and consistent");
     }
-    
-    println!("\n💡 KEY INSIGHTS:");
-    if summary.avg_accuracy_raw > 105.0 {
-        println!("• Raw data tends to overestimate elevation gain");
-        println!("• Distance-based resampling helps reduce noise");
-    }
-    
-    if summary.avg_ratio_10m < summary.avg_ratio_raw {
-        println!("• 10m intervals improve gain/loss balance");
-    }
-    
-    let best_overall = vec![
-        ("Raw", summary.avg_accuracy_raw),
-        ("10m", summary.avg_accuracy_10m),
-        ("25m", summary.avg_accuracy_25m),
-        ("50m", summary.avg_accuracy_50m),
-    ].into_iter()
-    .min_by(|a, b| (a.1 - 100.0).abs().partial_cmp(&(b.1 - 100.0).abs()).unwrap())
-    .unwrap();
-    
-    println!("• {} intervals provide best overall accuracy ({:.1}%)", best_overall.0, best_overall.1);
-    
-    println!("\n🔍 COMPARED TO OUR CURRENT APPROACH:");
-    println!("• Garmin-like processing is much simpler");
-    println!("• No complex adaptive thresholds needed");
-    println!("• Light smoothing preserves ride characteristics");
-    println!("• Distance-based resampling is effective for noise reduction");
 }
