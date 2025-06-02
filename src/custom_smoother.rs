@@ -66,17 +66,7 @@ impl ElevationData {
     
     fn calculate_distance_changes(&mut self) {
         if self.cumulative_distance.is_empty() {
-            println!("      [DEBUG] No cumulative distances to process");
             return;
-        }
-        
-        // Debug info
-        let total_distance = self.cumulative_distance.last().unwrap_or(&0.0);
-        println!("      [DEBUG] Total distance: {:.1}m, Points: {}", total_distance, self.cumulative_distance.len());
-        
-        // Check for potential issues
-        if *total_distance < 0.1 {
-            println!("      [WARNING] Very small total distance: {:.3}m", total_distance);
         }
         
         // ULTRA-SAFE: Use .get() for first element
@@ -93,20 +83,11 @@ impl ElevationData {
                 self.cumulative_distance.get(i - 1)
             ) {
                 let change = current - previous;
-                if change < 0.0 {
-                    println!("      [WARNING] Negative distance change at index {}: {:.3}m", i, change);
-                }
                 self.distance_change.push(change);
             } else {
                 // Safety fallback
                 self.distance_change.push(0.0);
             }
-        }
-        
-        // Check for unusual patterns
-        let zero_changes = self.distance_change.iter().filter(|&&d| d == 0.0).count();
-        if zero_changes > self.distance_change.len() / 2 {
-            println!("      [WARNING] {} zero distance changes out of {}", zero_changes, self.distance_change.len());
         }
     }
     
@@ -239,8 +220,6 @@ impl ElevationData {
     
     // FIXED: Only applies correction for ratios > 1.1 - preserves good results for balanced files
     pub fn process_elevation_data_adaptive(&mut self) {
-        println!("🔍 ADAPTIVE QUALITY-BASED PROCESSING");
-        
         // Step 1: Calculate initial altitude changes
         self.calculate_altitude_changes();
         
@@ -250,14 +229,8 @@ impl ElevationData {
         // Step 3: Detect data quality issues
         let gain_loss_ratio = if raw_loss > 0.0 { raw_gain / raw_loss } else { f64::INFINITY };
         
-        println!("   Raw gain: {:.1}m, Raw loss: {:.1}m", raw_gain, raw_loss);
-        println!("   Gain/Loss ratio: {:.3}", gain_loss_ratio);
-        
         // FIXED: Only apply adaptive correction for ratios > 1.1
         if gain_loss_ratio <= 1.1 {
-            println!("   ✅ EXCELLENT RATIO (≤ 1.1) - Using standard 1.9m symmetric processing");
-            println!("      No adaptive correction needed - preserving natural elevation profile");
-            
             // Use standard symmetric processing with 1.9m interval (which was working great!)
             self.apply_standard_symmetric_processing();
             return;
@@ -265,51 +238,27 @@ impl ElevationData {
         
         // For ratios > 1.1, assess severity and apply appropriate correction
         let data_quality = self.assess_data_quality_conservative(raw_gain, raw_loss, gain_loss_ratio);
-        println!("   Quality assessment: {:?}", data_quality);
         
         // Step 4: Apply processing based on detected quality
         match data_quality {
             DataQuality::ArtificialInflation => {
-                println!("   🔧 MILD INFLATION (ratio 1.1-1.5) - Applying gentle correction");
                 self.apply_gentle_inflation_correction(raw_gain, raw_loss);
             },
             DataQuality::SevereCorruption => {
-                println!("   🚨 SEVERE CORRUPTION (ratio > 1.5) - Applying moderate correction");
                 self.apply_moderate_correction(raw_gain, raw_loss);
             },
             DataQuality::Good => {
-                println!("   ✅ Using standard processing");
                 self.apply_standard_symmetric_processing();
             }
         }
         
         // Step 5: Recalculate accumulated values from processed altitude_change
         self.recalculate_accumulated_values_from_altitude_changes();
-        
-        let (final_gain, final_loss) = (
-            self.accumulated_ascent.last().unwrap_or(&0.0).clone(),
-            self.accumulated_descent.last().unwrap_or(&0.0).clone()
-        );
-        let final_ratio = if final_loss > 0.0 { final_gain / final_loss } else { f64::INFINITY };
-        
-        println!("   📊 PROCESSING RESULTS:");
-        println!("      Final gain: {:.1}m (was {:.1}m)", final_gain, raw_gain);
-        println!("      Final loss: {:.1}m (was {:.1}m)", final_loss, raw_loss);
-        println!("      Final ratio: {:.3} (was {:.3})", final_ratio, gain_loss_ratio);
-        
-        if final_ratio > 1.2 {
-            println!("      ⚠️  Still imbalanced - may need stronger correction");
-            self.data_quality_issues.push("Persistent gain/loss imbalance after processing".to_string());
-        } else if final_ratio >= 0.8 && final_ratio <= 1.2 {
-            println!("      ✅ Balanced ratio achieved!");
-        }
     }
     
     // NEW: Standard symmetric processing for good files (ratio ≤ 1.1)
     fn apply_standard_symmetric_processing(&mut self) {
         // This is what was working great before - don't mess with it!
-        
-        println!("      [DEBUG] Applying standard symmetric processing...");
         
         // Step 1: Apply the proven 1.9m symmetric processing
         self.apply_custom_interval_processing_symmetric(1.9);
@@ -323,8 +272,6 @@ impl ElevationData {
         // Clear any quality issues since this is good data
         self.data_quality_issues.clear();
         self.data_quality_issues.push("Good quality data".to_string());
-        
-        println!("      [DEBUG] Standard processing complete!");
     }
     
     // FIXED: More conservative assessment - only flag truly problematic files
@@ -382,15 +329,8 @@ impl ElevationData {
     
     // NEW: Gentle correction for mild inflation (ratio 1.1-1.5)
     fn apply_gentle_inflation_correction(&mut self, _raw_gain: f64, _raw_loss: f64) {
-        println!("   🔧 Applying GENTLE correction for mild inflation...");
-        
-        println!("      📊 Applying light 30-point smoothing...");
         self.altitude_change = Self::rolling_mean(&self.altitude_change, 30);
-        
-        println!("      ✂️  Applying conservative gradient capping (max 30%)...");
         self.apply_strict_gradient_capping(30.0);
-        
-        println!("      🚫 Applying small deadband filtering (2m threshold)...");
         self.apply_large_deadband_filtering(2.0);
         
         self.recalculate_accumulated_values_from_altitude_changes();
@@ -400,22 +340,14 @@ impl ElevationData {
         let new_ratio = if processed_loss > 0.0 { processed_gain / processed_loss } else { f64::INFINITY };
         
         if new_ratio > 2.0 && processed_loss > 100.0 {
-            println!("      ⚖️  Applying very gentle scaling (still quite imbalanced)...");
             self.scale_gain_to_realistic_ratio(processed_loss, 1.3);
             self.recalculate_accumulated_values_from_altitude_changes();
         }
     }
     
     fn apply_moderate_correction(&mut self, _raw_gain: f64, _raw_loss: f64) {
-        println!("   🔧 Applying MODERATE correction for significant corruption...");
-        
-        println!("      📊 Applying moderate 75-point smoothing...");
         self.altitude_change = Self::rolling_mean(&self.altitude_change, 75);
-        
-        println!("      ✂️  Applying moderate gradient capping (max 22%)...");
         self.apply_strict_gradient_capping(22.0);
-        
-        println!("      🚫 Applying moderate deadband filtering (4m threshold)...");
         self.apply_large_deadband_filtering(4.0);
         
         self.recalculate_accumulated_values_from_altitude_changes();
@@ -425,7 +357,6 @@ impl ElevationData {
         let new_ratio = if processed_loss > 0.0 { processed_gain / processed_loss } else { f64::INFINITY };
         
         if new_ratio > 1.8 && processed_loss > 100.0 {
-            println!("      ⚖️  Applying moderate scaling to balance ratio...");
             self.scale_gain_to_realistic_ratio(processed_loss, 1.25);
             self.recalculate_accumulated_values_from_altitude_changes();
         }
@@ -479,7 +410,6 @@ impl ElevationData {
         
         if current_gain > 0.0 {
             let scale_factor = target_gain / current_gain;
-            println!("         Scaling positive changes by factor: {:.3}", scale_factor);
             
             // FIXED: Use iterator to avoid bounds issues
             for change in self.altitude_change.iter_mut() {
@@ -519,7 +449,6 @@ impl ElevationData {
         
         // Safety check: prevent creating too many points
         if interval_meters < 0.1 {
-            println!("      [WARNING] Interval too small: {:.3}m, using minimum 0.1m", interval_meters);
             return self.resample_to_uniform_distance(0.1);
         }
         
@@ -527,14 +456,8 @@ impl ElevationData {
         
         // Safety check: prevent excessive memory usage
         if num_points > 1_000_000 {
-            println!("      [ERROR] Would create {} points! Total distance: {:.1}m, interval: {:.3}m", 
-                     num_points, total_distance, interval_meters);
-            println!("      [ERROR] Aborting resampling to prevent memory issues");
             return (vec![], vec![]);
         }
-        
-        println!("      [DEBUG] Resampling: {:.1}m total distance, {:.3}m interval = {} points", 
-                 total_distance, interval_meters, num_points);
         
         let mut uniform_distances = Vec::with_capacity(num_points);
         let mut uniform_elevations = Vec::with_capacity(num_points);
@@ -690,14 +613,11 @@ impl ElevationData {
 
     /// NEW: Custom interval processing with SYMMETRIC deadband (FIXED VERSION)
     pub fn apply_custom_interval_processing_symmetric(&mut self, interval_meters: f64) {
-        println!("      [DEBUG] Starting symmetric processing with interval: {:.1}m", interval_meters);
-        
         self.calculate_altitude_changes();
         self.calculate_accumulated_ascent_descent();
         self.calculate_overall_gradients();
         
         let hilliness_ratio = self.overall_uphill_gradient;
-        println!("      [DEBUG] Hilliness ratio: {:.1}", hilliness_ratio);
         
         let (deadband_threshold, gaussian_window) = if hilliness_ratio < 20.0 {
             let deadband = match interval_meters as u32 {
@@ -719,30 +639,19 @@ impl ElevationData {
             (deadband, window)
         };
         
-        println!("      [DEBUG] Deadband: {:.1}m, Gaussian window: {}", deadband_threshold, gaussian_window);
-        println!("      [DEBUG] Starting resampling...");
-        
         let (uniform_distances, uniform_elevations) = self.resample_to_uniform_distance(interval_meters);
         if uniform_elevations.is_empty() { 
-            println!("      [DEBUG] No elevations after resampling!");
             return; 
         }
         
-        println!("      [DEBUG] Resampled to {} points", uniform_elevations.len());
-        
         // Check if resampling created too many points
         if uniform_elevations.len() > 100000 {
-            println!("      [WARNING] Too many points after resampling: {}", uniform_elevations.len());
-            println!("      [WARNING] This may cause performance issues!");
+            // Too many points - probably a very long route. Skip processing to avoid hanging.
+            return;
         }
         
-        println!("      [DEBUG] Applying median filter...");
         let median_smoothed = Self::median_filter(&uniform_elevations, 3);
-        
-        println!("      [DEBUG] Applying Gaussian smoothing...");
         let gaussian_smoothed = Self::gaussian_smooth(&median_smoothed, gaussian_window);
-        
-        println!("      [DEBUG] Creating altitude changes...");
         
         // SAFE VERSION: Update data with comprehensive bounds checking
         let mut smoothed_altitude_changes = vec![0.0];
@@ -767,16 +676,9 @@ impl ElevationData {
             self.distance_change[0] = self.cumulative_distance[0];
         }
         
-        println!("      [DEBUG] Applying symmetric deadband filtering...");
         self.apply_symmetric_deadband_filtering(deadband_threshold);
-        
-        println!("      [DEBUG] Calculating gradients...");
         self.calculate_gradients();
-        
-        println!("      [DEBUG] Recalculating accumulated values...");
         self.recalculate_accumulated_values_after_smoothing();
-        
-        println!("      [DEBUG] Symmetric processing complete!");
     }
     
     fn median_filter(data: &[f64], window: usize) -> Vec<f64> {
@@ -786,19 +688,9 @@ impl ElevationData {
             return result;
         }
         
-        // Debug for large datasets
-        if data.len() > 10000 {
-            println!("      [DEBUG] Median filter on {} points...", data.len());
-        }
-        
         let half_window = window / 2;
         
         for i in 0..data.len() {
-            // Progress indicator for large datasets
-            if data.len() > 10000 && i % 5000 == 0 {
-                println!("      [DEBUG] Median filter progress: {}/{}", i, data.len());
-            }
-            
             let start = if i >= half_window { i - half_window } else { 0 };
             let end = std::cmp::min(i + half_window + 1, data.len()); // Use +1 for end to avoid exclusive bound issues
             
@@ -840,20 +732,10 @@ impl ElevationData {
             return result;
         }
         
-        // Debug for large datasets
-        if data.len() > 10000 {
-            println!("      [DEBUG] Gaussian smooth on {} points, window {}", data.len(), window);
-        }
-        
         let sigma = window as f64 / 6.0;
         let half_window = window / 2;
         
         for i in 0..data.len() {
-            // Progress indicator for large datasets
-            if data.len() > 10000 && i % 5000 == 0 {
-                println!("      [DEBUG] Gaussian smooth progress: {}/{}", i, data.len());
-            }
-            
             let start = if i >= half_window { i - half_window } else { 0 };
             let end = std::cmp::min(i + half_window + 1, data.len()); // Use +1 for end to avoid exclusive bound issues
             

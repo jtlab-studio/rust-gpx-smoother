@@ -184,7 +184,7 @@ pub fn run_single_interval_analysis(gpx_folder: &str) -> Result<(), Box<dyn std:
 fn collect_gpx_files(gpx_folder: &str) -> Result<Vec<std::path::PathBuf>, Box<dyn std::error::Error>> {
     let mut gpx_files = Vec::new();
     
-    for entry in WalkDir::new(gpx_folder) {
+    for entry in WalkDir::new(gpx_folder).max_depth(1) {
         let entry = entry?;
         if entry.file_type().is_file() {
             if let Some(extension) = entry.path().extension() {
@@ -405,9 +405,16 @@ fn process_single_file_fixed(
         }
     };
     
-    // Get official data for comparison
+    // Handle various filename suffixes when looking up official data
+    let clean_filename = filename
+        .replace("_Processed.gpx", ".gpx")
+        .replace("_Cleaned.gpx", ".gpx")
+        .replace("_Fixed.gpx", ".gpx")
+        .replace("cleaned_", "")
+        .to_lowercase();
+    
     let official_gain = official_data
-        .get(&filename.to_lowercase())
+        .get(&clean_filename)
         .copied()
         .unwrap_or(0);
     

@@ -28,6 +28,8 @@ mod single_interval_analysis;
 mod gpx_preprocessing_diagnostic;
 mod conservative_analysis;
 mod tolerant_gpx_reader;
+mod gpx_processor_adaptive;
+mod garmin_like_processor;
 
 use custom_smoother::{ElevationData, SmoothingVariant};
 
@@ -127,6 +129,7 @@ pub fn load_official_elevation_data() -> Result<HashMap<String, u32>, Box<dyn st
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let gpx_folder = r"C:\Users\Dzhu\Documents\GPX Files";
     let preprocessed_folder = r"C:\Users\Dzhu\Documents\GPX Files\Preprocessed";
+    let processed_folder = r"C:\Users\Dzhu\Documents\GPX Files\Processed";
     let _output_folder = r"C:\Users\Dzhu\Documents\GPX Files\GPX Analysis";
     
     // Print enhanced menu with all analysis options
@@ -166,6 +169,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("16. 🔍 DIAGNOSTIC: Compare Original vs Preprocessed Files [DO THIS FIRST]");
     println!("17. 🛡️  CONSERVATIVE ANALYSIS: Use Original Files When Possible [RECOMMENDED]");
     println!("18. 🧪 TEST TOLERANT GPX READING: Like Garmin Connect [NEW - TEST FIRST]");
+    println!("19. 📊 PROCESS GPX FILES: Create processed files with track names [NEW]");
+    println!("20. 🏃 GARMIN-LIKE ANALYSIS: Test 10m, 25m, 50m intervals [NEW]");
     
     // Offer menu for additional analyses
     println!("\n📊 Choose an analysis to run:");
@@ -185,6 +190,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("16. 🔍 Preprocessing Diagnostic (Find Artificial Elevation) [CRITICAL - DO FIRST]");
     println!("17. 🛡️  Conservative Analysis (Original Files First) [RECOMMENDED FOR ACCURACY]");
     println!("18. 🧪 Test Tolerant GPX Reading (Like Garmin Connect) [NEW - TEST APPROACH]");
+    println!("19. 📊 Process GPX Files (Create files with track names) [NEW]");
+    println!("20. 🏃 Garmin-like Analysis (Test 10m, 25m, 50m intervals) [NEW]");
     println!("compare. 🔄 Compare Aggressive vs Balanced Processing [NEW]");
     println!("debug. 🔍 DEBUG: Show what files are actually in your folders");
     
@@ -369,6 +376,41 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("   (tolerant of minor XML issues, no artificial elevation data)");
             tolerant_gpx_reader::analyze_parsing_strategies(gpx_folder)?;
         },
+        "19" => {
+            println!("\n📊 Processing GPX files and saving with track names...");
+            println!("🎯 This will process each file and save as [TrackName]_Processed.gpx");
+            println!("📁 Output folder: {}", processed_folder);
+            gpx_processor_adaptive::run_gpx_processing_and_analysis(gpx_folder, processed_folder)?;
+        },
+        "20" => {
+            println!("\n🏃 Running Garmin-like analysis with distance intervals...");
+            println!("🎯 Testing minimal processing with 10m, 25m, and 50m intervals");
+            
+            // Check if preprocessed folder exists and ask user which to use
+            if Path::new(preprocessed_folder).exists() {
+                println!("📂 Both original and preprocessed folders found:");
+                println!("   Original: {}", gpx_folder);
+                println!("   Preprocessed: {}", preprocessed_folder);
+                println!("");
+                print!("Use preprocessed folder? (y/N): ");
+                io::stdout().flush().unwrap();
+                
+                let mut choice = String::new();
+                io::stdin().read_line(&mut choice).unwrap();
+                let use_preprocessed = choice.trim().to_lowercase();
+                
+                if use_preprocessed == "y" || use_preprocessed == "yes" {
+                    println!("✅ Using preprocessed folder: {}", preprocessed_folder);
+                    garmin_like_processor::run_garmin_like_analysis(preprocessed_folder)?;
+                } else {
+                    println!("📁 Using original folder: {}", gpx_folder);
+                    garmin_like_processor::run_garmin_like_analysis(gpx_folder)?;
+                }
+            } else {
+                println!("📁 Using original folder: {}", gpx_folder);
+                garmin_like_processor::run_garmin_like_analysis(gpx_folder)?;
+            }
+        },
         "compare" => {
             println!("\n🔄 Running comparison: Aggressive vs Balanced processing...");
             println!("🎯 This will show you the difference between old and new adaptive processing");
@@ -442,7 +484,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("👋 Exiting. Your processed GPX files are ready in the output folder!");
         },
         _ => {
-            println!("ℹ️  Unknown option. Choose a number from 1-18, 'compare', 'debug', or press Enter to exit.");
+            println!("ℹ️  Unknown option. Choose a number from 1-20, 'compare', 'debug', or press Enter to exit.");
         }
     }
     
