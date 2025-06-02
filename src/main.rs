@@ -30,6 +30,7 @@ mod conservative_analysis;
 mod tolerant_gpx_reader;
 mod gpx_processor_adaptive;
 mod garmin_like_processor;
+mod garmin_23m_processor; // NEW: Fixed 23m interval processor
 mod adaptive_interval_selector; // NEW: Intelligent interval selection
 
 use custom_smoother::{ElevationData, SmoothingVariant};
@@ -531,11 +532,56 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("   ❌ Folder does not exist!");
             }
         },
+        "22" => {
+            println!("\n🎯 Running GARMIN 23M PROCESSOR...");
+            println!("🚀 This will process files with fixed 23m interval and save new GPX files!");
+            println!("📁 Output folder: {}", processed_folder);
+            println!("🎯 Features:");
+            println!("   • Fixed 23m distance-based resampling");
+            println!("   • Garmin Connect-style minimal smoothing");
+            println!("   • Remove GPS spikes while preserving terrain");
+            println!("   • Save processed GPX files for use in GPS devices");
+            println!("   • Compare raw vs processed elevation accuracy");
+            
+            // Check if output folder exists, create if needed
+            if !Path::new(processed_folder).exists() {
+                println!("📁 Creating output folder: {}", processed_folder);
+                std::fs::create_dir_all(processed_folder)?;
+            }
+            
+            // Check if input folder exists and ask user which to use
+            if Path::new(preprocessed_folder).exists() {
+                println!("📂 Both original and preprocessed folders found:");
+                println!("   Original: {}", gpx_folder);
+                println!("   Preprocessed: {}", preprocessed_folder);
+                println!("");
+                println!("🎯 RECOMMENDATION: Use original folder for most natural results!");
+                println!("   Garmin-like processing works well with original GPS data.");
+                println!("");
+                print!("Use original folder? (Y/n): ");
+                io::stdout().flush().unwrap();
+                
+                let mut choice = String::new();
+                io::stdin().read_line(&mut choice).unwrap();
+                let use_original = choice.trim().to_lowercase();
+                
+                if use_original == "n" || use_original == "no" {
+                    println!("✅ Using preprocessed folder: {}", preprocessed_folder);
+                    garmin_23m_processor::run_garmin_23m_processing(preprocessed_folder, processed_folder)?;
+                } else {
+                    println!("✅ Using original folder: {}", gpx_folder);
+                    garmin_23m_processor::run_garmin_23m_processing(gpx_folder, processed_folder)?;
+                }
+            } else {
+                println!("📁 Using original folder: {}", gpx_folder);
+                garmin_23m_processor::run_garmin_23m_processing(gpx_folder, processed_folder)?;
+            }
+        },
         "" => {
             println!("👋 Exiting. Your processed GPX files are ready in the output folder!");
         },
         _ => {
-            println!("ℹ️  Unknown option. Choose a number from 1-21, 'compare', 'debug', or press Enter to exit.");
+            println!("ℹ️  Unknown option. Choose a number from 1-22, 'compare', 'debug', or press Enter to exit.");
         }
     }
     
