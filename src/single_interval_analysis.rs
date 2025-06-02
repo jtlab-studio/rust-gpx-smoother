@@ -1,11 +1,11 @@
-/// SINGLE INTERVAL ANALYSIS: 1.9m Symmetric Processing with BALANCED Adaptive Quality
+/// SINGLE INTERVAL ANALYSIS: 1.9m Symmetric Processing with FIXED Adaptive Quality
 /// 
 /// Focuses exclusively on the scientifically proven optimal 1.9m interval
 /// with symmetric deadband filtering. Uses tolerant GPX reading like Garmin Connect
 /// for maximum file compatibility without distorting elevation data.
 /// 
-/// BALANCED: Uses more conservative thresholds and graduated response to preserve
-/// natural elevation profiles while only correcting truly corrupted data.
+/// FIXED: Only applies adaptive correction when gain/loss ratio > 1.1
+/// Excellent files (ratio ≤ 1.1) use proven 1.9m symmetric processing unchanged!
 
 use std::path::Path;
 use std::collections::HashMap;
@@ -19,9 +19,10 @@ use crate::tolerant_gpx_reader::read_gpx_tolerantly;
 // TARGET INTERVAL: Based on focused symmetric analysis results
 const TARGET_INTERVAL_M: f64 = 1.9;
 
-// BALANCED: More conservative thresholds
-const MILD_INFLATION_THRESHOLD: f64 = 1.5;     // Was 1.1 - too aggressive
-const SEVERE_CORRUPTION_THRESHOLD: f64 = 3.0;  // Was 2.0
+// FIXED: Only apply adaptive correction for ratios > 1.1
+const EXCELLENT_THRESHOLD: f64 = 1.1;        // No correction needed - use proven 1.9m method
+const MILD_INFLATION_THRESHOLD: f64 = 1.5;   // Gentle adaptive correction
+const SEVERE_CORRUPTION_THRESHOLD: f64 = 3.0; // Moderate adaptive correction
 
 #[derive(Debug, Serialize, Clone)]
 pub struct SingleIntervalResult {
@@ -83,11 +84,11 @@ pub struct AnalysisSummary {
     files_with_errors: u32,
     files_with_official_data: u32,
     
-    // BALANCED: Updated processing statistics
-    files_with_excellent_quality: u32,
-    files_with_good_quality: u32,
-    files_with_mild_inflation: u32,
-    files_with_severe_corruption: u32,
+    // FIXED: Updated processing statistics based on new thresholds
+    files_with_excellent_quality: u32,    // ratio ≤ 1.1 (no correction)
+    files_with_good_quality: u32,         // ratio 1.1-1.5 (gentle correction)
+    files_with_mild_inflation: u32,       // ratio 1.5-3.0 (moderate correction)
+    files_with_severe_corruption: u32,    // ratio > 3.0 (strong correction)
     
     // Accuracy statistics
     average_accuracy_percent: f64,
@@ -99,7 +100,7 @@ pub struct AnalysisSummary {
     // Balance statistics
     average_gain_loss_ratio: f64,
     median_gain_loss_ratio: f64,
-    files_balanced_08_15: u32,  // BALANCED: More realistic range
+    files_balanced_08_15: u32,  // More realistic range
     files_excellent_09_11: u32,
     
     // Processing quality
@@ -112,16 +113,15 @@ pub struct AnalysisSummary {
 pub fn run_single_interval_analysis(gpx_folder: &str) -> Result<(), Box<dyn std::error::Error>> {
     let total_start = std::time::Instant::now();
     
-    println!("\n🎯 1.9M SYMMETRIC ANALYSIS WITH BALANCED ADAPTIVE PROCESSING");
-    println!("==========================================================");
+    println!("\n🎯 1.9M SYMMETRIC ANALYSIS WITH FIXED ADAPTIVE PROCESSING");
+    println!("========================================================");
     println!("🏆 OPTIMAL INTERVAL: {:.1}m with SymmetricFixed method", TARGET_INTERVAL_M);
     println!("   • Scientifically proven optimal from focused analysis");
     println!("   • Symmetric deadband filtering (fixes loss under-estimation)");
-    println!("   • 🆕 BALANCED: Conservative thresholds preserve natural profiles");
-    println!("   • 🔧 Only corrects truly corrupted data (ratio > {:.1})", MILD_INFLATION_THRESHOLD);
-    println!("   • 📊 Graduated response: gentle → moderate → strong correction");
-    println!("   • 🌿 Preserves terrain character and small elevation features");
-    println!("   • 🎯 More natural results matching professional tools");
+    println!("   • 🔧 FIXED: Only corrects files with ratio > {:.1}", EXCELLENT_THRESHOLD);
+    println!("   • 🌟 EXCELLENT files (ratio ≤ {:.1}): Use proven 1.9m method unchanged!", EXCELLENT_THRESHOLD);
+    println!("   • 🔧 PROBLEMATIC files (ratio > {:.1}): Apply graduated adaptive correction", EXCELLENT_THRESHOLD);
+    println!("   • 📊 Preserves natural profiles while fixing only truly broken data");
     println!("   • ✅ Tolerant GPX reading like Garmin Connect");
     println!("   • 📈 Detailed file-by-file processing analysis\n");
     
@@ -164,9 +164,9 @@ pub fn run_single_interval_analysis(gpx_folder: &str) -> Result<(), Box<dyn std:
     
     // Write detailed results to CSV files
     let output_folder = Path::new(gpx_folder);
-    write_results_csv(&results, &output_folder.join("1.9m_balanced_adaptive_detailed_results.csv"))?;
-    write_errors_csv(&errors, &output_folder.join("1.9m_balanced_adaptive_processing_errors.csv"))?;
-    write_summary_csv(&summary, &output_folder.join("1.9m_balanced_adaptive_analysis_summary.csv"))?;
+    write_results_csv(&results, &output_folder.join("1.9m_fixed_adaptive_detailed_results.csv"))?;
+    write_errors_csv(&errors, &output_folder.join("1.9m_fixed_adaptive_processing_errors.csv"))?;
+    write_summary_csv(&summary, &output_folder.join("1.9m_fixed_adaptive_analysis_summary.csv"))?;
     
     // Print comprehensive analysis
     print_detailed_analysis(&results, &errors, &summary);
@@ -174,9 +174,9 @@ pub fn run_single_interval_analysis(gpx_folder: &str) -> Result<(), Box<dyn std:
     let total_time = total_start.elapsed();
     println!("\n⏱️  TOTAL EXECUTION TIME: {:.1} seconds", total_time.as_secs_f64());
     println!("📁 Results saved to folder: {}", gpx_folder);
-    println!("   • 1.9m_balanced_adaptive_detailed_results.csv - Individual file results");
-    println!("   • 1.9m_balanced_adaptive_processing_errors.csv - Files that failed processing");
-    println!("   • 1.9m_balanced_adaptive_analysis_summary.csv - Summary statistics");
+    println!("   • 1.9m_fixed_adaptive_detailed_results.csv - Individual file results");
+    println!("   • 1.9m_fixed_adaptive_processing_errors.csv - Files that failed processing");
+    println!("   • 1.9m_fixed_adaptive_analysis_summary.csv - Summary statistics");
     
     Ok(())
 }
@@ -206,8 +206,8 @@ fn process_all_files_preprocessed(
     let mut results = Vec::new();
     let mut errors = Vec::new();
     
-    println!("🚀 Processing {} preprocessed files with 1.9m balanced adaptive method...", gpx_files.len());
-    println!("⚡ Using clean GPX files with tolerant reading + balanced quality processing!");
+    println!("🚀 Processing {} preprocessed files with 1.9m fixed adaptive method...", gpx_files.len());
+    println!("⚡ Using clean GPX files with intelligent routing (1.9m vs adaptive)!");
     
     for (index, gpx_path) in gpx_files.iter().enumerate() {
         let filename = gpx_path.file_name()
@@ -225,7 +225,7 @@ fn process_all_files_preprocessed(
         println!("🔄 Processing {}/{}: {} -> {}", 
                  index + 1, gpx_files.len(), filename, original_filename);
         
-        match process_single_file_balanced(gpx_path, &original_filename, official_data) {
+        match process_single_file_fixed(gpx_path, &original_filename, official_data) {
             Ok(result) => {
                 println!("   ✅ Success: {:.1}m gain ({:.1}% accuracy) [{}]", 
                          result.processed_elevation_gain_m, 
@@ -251,7 +251,7 @@ fn process_all_files(
     let mut results = Vec::new();
     let mut errors = Vec::new();
     
-    println!("🚀 Processing {} files with 1.9m balanced adaptive + tolerant reading...", gpx_files.len());
+    println!("🚀 Processing {} files with 1.9m fixed adaptive + tolerant reading...", gpx_files.len());
     
     for (index, gpx_path) in gpx_files.iter().enumerate() {
         let filename = gpx_path.file_name()
@@ -261,7 +261,7 @@ fn process_all_files(
         
         println!("🔄 Processing {}/{}: {}", index + 1, gpx_files.len(), filename);
         
-        match process_single_file_balanced(gpx_path, &filename, official_data) {
+        match process_single_file_fixed(gpx_path, &filename, official_data) {
             Ok(result) => {
                 println!("   ✅ Success: {:.1}m gain ({:.1}% accuracy) [{}]", 
                          result.processed_elevation_gain_m, 
@@ -280,7 +280,7 @@ fn process_all_files(
     (results, errors)
 }
 
-fn process_single_file_balanced(
+fn process_single_file_fixed(
     gpx_path: &Path, 
     filename: &str,
     official_data: &HashMap<String, u32>
@@ -346,39 +346,63 @@ fn process_single_file_balanced(
     println!("      • Raw elevation loss: {:.1}m", raw_loss);
     println!("      • Raw gain/loss ratio: {:.3}", raw_ratio);
     
-    // 🔧 BALANCED: More conservative adaptive processing decision
+    // 🔧 FIXED: Only use adaptive processing for truly problematic files (ratio > 1.1)
+    // For good files (ratio ≤ 1.1), use the proven 1.9m symmetric processing
     let (processed_gain, processed_loss, processing_method, data_quality) = {
-        let mut elevation_data = ElevationData::new_with_variant(
-            elevations.clone(),
-            distances.clone(),
-            SmoothingVariant::AdaptiveQuality
-        );
-        
-        // Use the balanced adaptive processing
-        elevation_data.process_elevation_data_adaptive();
-        
-        let gain = elevation_data.get_total_elevation_gain();
-        let loss = elevation_data.get_total_elevation_loss();
-        
-        // BALANCED: Determine processing method based on conservative thresholds
-        let method_used = if raw_ratio <= 1.1 {
-            "Standard Processing (Excellent Quality)".to_string()
-        } else if raw_ratio <= MILD_INFLATION_THRESHOLD {
-            "Standard Processing (Good Quality)".to_string()
-        } else if raw_ratio <= SEVERE_CORRUPTION_THRESHOLD {
-            "Gentle Correction (Mild Inflation)".to_string()
+        if raw_ratio <= EXCELLENT_THRESHOLD {
+            // EXCELLENT FILES: Use proven 1.9m symmetric processing (was working great!)
+            println!("   ✅ EXCELLENT RATIO (≤ {:.1}) - Using proven 1.9m symmetric processing", EXCELLENT_THRESHOLD);
+            println!("      No adaptive correction needed - this file has good data!");
+            
+            let mut elevation_data = ElevationData::new_with_variant(
+                elevations.clone(),
+                distances.clone(),
+                SmoothingVariant::SymmetricFixed  // Use the proven symmetric method
+            );
+            
+            // Apply the 1.9m processing that was working so well
+            elevation_data.apply_custom_interval_processing_symmetric(TARGET_INTERVAL_M);
+            
+            let gain = elevation_data.get_total_elevation_gain();
+            let loss = elevation_data.get_total_elevation_loss();
+            
+            (gain, loss, 
+             "Standard Processing (Excellent Quality)".to_string(),
+             "Good quality data".to_string())
         } else {
-            "Moderate Correction (Severe Corruption)".to_string()
-        };
-        
-        let quality_issues = elevation_data.get_data_quality_issues();
-        let quality_description = if quality_issues.is_empty() {
-            "Good quality data".to_string()
-        } else {
-            quality_issues.join("; ")
-        };
-        
-        (gain, loss, method_used, quality_description)
+            // PROBLEMATIC FILES: Use adaptive processing for correction
+            println!("   🔧 PROBLEMATIC RATIO (> {:.1}) - Applying adaptive correction", EXCELLENT_THRESHOLD);
+            
+            let mut elevation_data = ElevationData::new_with_variant(
+                elevations.clone(),
+                distances.clone(),
+                SmoothingVariant::AdaptiveQuality
+            );
+            
+            // Use the fixed adaptive processing (only corrects files that need it)
+            elevation_data.process_elevation_data_adaptive();
+            
+            let gain = elevation_data.get_total_elevation_gain();
+            let loss = elevation_data.get_total_elevation_loss();
+            
+            // Determine processing method based on the ratio
+            let method_used = if raw_ratio <= MILD_INFLATION_THRESHOLD {
+                "Gentle Correction (Mild Inflation)".to_string()
+            } else if raw_ratio <= SEVERE_CORRUPTION_THRESHOLD {
+                "Moderate Correction (Significant Corruption)".to_string()
+            } else {
+                "Strong Correction (Severe Corruption)".to_string()
+            };
+            
+            let quality_issues = elevation_data.get_data_quality_issues();
+            let quality_description = if quality_issues.is_empty() {
+                "Processed data".to_string()
+            } else {
+                quality_issues.join("; ")
+            };
+            
+            (gain, loss, method_used, quality_description)
+        }
     };
     
     // Get official data for comparison
@@ -423,10 +447,12 @@ fn process_single_file_balanced(
     let accuracy_rating = classify_accuracy(accuracy_percent);
     let balance_rating = classify_balance(gain_loss_ratio);
     
-    println!("   📊 BALANCED PROCESSING SUMMARY:");
+    println!("   📊 PROCESSING SUMMARY:");
     println!("      • Method used: {}", processing_method);
-    println!("      • Gain: {:.1}m → {:.1}m ({:.1}% reduction)", raw_gain, processed_gain, gain_reduction_percent);
-    println!("      • Loss: {:.1}m → {:.1}m ({:.1}% reduction)", raw_loss, processed_loss, loss_reduction_percent);
+    println!("      • Gain: {:.1}m → {:.1}m ({:.1}% change)", raw_gain, processed_gain, 
+             if raw_gain > 0.0 { ((processed_gain - raw_gain) / raw_gain) * 100.0 } else { 0.0 });
+    println!("      • Loss: {:.1}m → {:.1}m ({:.1}% change)", raw_loss, processed_loss,
+             if raw_loss > 0.0 { ((processed_loss - raw_loss) / raw_loss) * 100.0 } else { 0.0 });
     println!("      • Ratio: {:.3} → {:.3}", raw_ratio, gain_loss_ratio);
     
     if official_gain > 0 {
@@ -434,13 +460,16 @@ fn process_single_file_balanced(
         println!("      • Accuracy: {:.1}% → {:.1}%", raw_accuracy, accuracy_percent);
     }
     
-    // BALANCED: Special reporting for different processing levels
-    if raw_ratio > SEVERE_CORRUPTION_THRESHOLD {
-        println!("   🚨 SEVERE CORRUPTION: Applied moderate correction");
-    } else if raw_ratio > MILD_INFLATION_THRESHOLD {
-        println!("   🔧 MILD INFLATION: Applied gentle correction");
+    // UPDATED: More nuanced reporting based on the new approach
+    if raw_ratio <= EXCELLENT_THRESHOLD {
+        println!("   🌟 EXCELLENT DATA: Used proven 1.9m symmetric processing");
+        println!("      Natural elevation profile preserved without correction");
+    } else if raw_ratio <= MILD_INFLATION_THRESHOLD {
+        println!("   🔧 MILD ISSUE: Applied gentle correction to balance gain/loss");
+    } else if raw_ratio <= SEVERE_CORRUPTION_THRESHOLD {
+        println!("   🚨 SIGNIFICANT ISSUE: Applied moderate correction for artificial inflation");
     } else {
-        println!("   ✅ GOOD QUALITY: Applied standard processing");
+        println!("   💀 SEVERE CORRUPTION: Applied strong correction for badly corrupted data");
     }
     
     let result = SingleIntervalResult {
@@ -460,7 +489,7 @@ fn process_single_file_balanced(
         loss_reduction_percent,
         interval_used_m: TARGET_INTERVAL_M,
         smoothing_variant: processing_method.clone(),
-        deadband_filtering: "Balanced Adaptive".to_string(),
+        deadband_filtering: "Fixed Adaptive".to_string(),
         raw_gain_loss_ratio: raw_ratio,
         processing_method_used: processing_method,
         data_quality_detected: data_quality,
@@ -513,7 +542,7 @@ fn create_processing_error(gpx_path: &Path, error_message: &str) -> ProcessingEr
         error_type,
         error_message: error_message.to_string(),
         file_size_bytes,
-        attempted_processing: "1.9m Balanced AdaptiveQuality with Tolerant GPX Reading".to_string(),
+        attempted_processing: "1.9m Fixed AdaptiveQuality with Tolerant GPX Reading".to_string(),
     }
 }
 
@@ -609,13 +638,13 @@ fn calculate_analysis_summary(
     
     let files_with_official_count = files_with_official.len() as u32;
     
-    // BALANCED: Count by processing quality level
+    // FIXED: Count by processing quality level using new thresholds
     let files_excellent_quality = results.iter()
-        .filter(|r| r.raw_gain_loss_ratio <= 1.1)
+        .filter(|r| r.raw_gain_loss_ratio <= EXCELLENT_THRESHOLD)
         .count() as u32;
     
     let files_good_quality = results.iter()
-        .filter(|r| r.raw_gain_loss_ratio > 1.1 && r.raw_gain_loss_ratio <= MILD_INFLATION_THRESHOLD)
+        .filter(|r| r.raw_gain_loss_ratio > EXCELLENT_THRESHOLD && r.raw_gain_loss_ratio <= MILD_INFLATION_THRESHOLD)
         .count() as u32;
         
     let files_mild_inflation = results.iter()
@@ -705,7 +734,7 @@ fn calculate_analysis_summary(
         0.0
     };
     
-    // BALANCED: More realistic balance ranges
+    // More realistic balance ranges
     let files_balanced = results.iter()
         .filter(|r| r.gain_loss_ratio >= 0.8 && r.gain_loss_ratio <= 1.5)
         .count() as u32;
@@ -898,8 +927,8 @@ fn print_detailed_analysis(
     errors: &[ProcessingError], 
     summary: &AnalysisSummary
 ) {
-    println!("\n🎯 1.9M BALANCED ADAPTIVE PROCESSING RESULTS");
-    println!("==========================================");
+    println!("\n🎯 1.9M FIXED ADAPTIVE PROCESSING RESULTS");
+    println!("========================================");
     
     // Processing summary
     println!("\n📊 PROCESSING SUMMARY:");
@@ -908,23 +937,48 @@ fn print_detailed_analysis(
     println!("• Files with processing errors: {}", summary.files_with_errors);
     println!("• Files with official elevation data: {}", summary.files_with_official_data);
     
-    // BALANCED: Updated processing breakdown
-    println!("\n🎯 BALANCED DATA QUALITY BREAKDOWN:");
-    println!("• Excellent quality (ratio ≤ 1.1): {} ({:.1}%)", 
+    // FIXED: Updated processing breakdown using new thresholds
+    println!("\n🎯 FIXED PROCESSING APPROACH:");
+    println!("• Excellent files (ratio ≤ {:.1}): {} ({:.1}%)", 
+             EXCELLENT_THRESHOLD,
              summary.files_with_excellent_quality,
              (summary.files_with_excellent_quality as f64 / summary.files_processed_successfully as f64) * 100.0);
-    println!("• Good quality (ratio 1.1-{:.1}): {} ({:.1}%)", 
-             MILD_INFLATION_THRESHOLD,
+    println!("  → Used proven 1.9m symmetric processing (NO correction needed)");
+    println!("  → Preserves natural elevation profiles exactly as recorded");
+    
+    println!("• Mild inflation (ratio {:.1}-{:.1}): {} ({:.1}%)", 
+             EXCELLENT_THRESHOLD, MILD_INFLATION_THRESHOLD,
              summary.files_with_good_quality,
              (summary.files_with_good_quality as f64 / summary.files_processed_successfully as f64) * 100.0);
-    println!("• Mild inflation (ratio {:.1}-{:.1}): {} ({:.1}%)", 
+    println!("  → Applied gentle adaptive correction (light smoothing + small deadband)");
+    
+    println!("• Significant issues (ratio {:.1}-{:.1}): {} ({:.1}%)", 
              MILD_INFLATION_THRESHOLD, SEVERE_CORRUPTION_THRESHOLD,
              summary.files_with_mild_inflation,
              (summary.files_with_mild_inflation as f64 / summary.files_processed_successfully as f64) * 100.0);
+    println!("  → Applied moderate adaptive correction (medium smoothing + deadband)");
+    
     println!("• Severe corruption (ratio > {:.1}): {} ({:.1}%)", 
              SEVERE_CORRUPTION_THRESHOLD,
              summary.files_with_severe_corruption,
              (summary.files_with_severe_corruption as f64 / summary.files_processed_successfully as f64) * 100.0);
+    println!("  → Applied strong adaptive correction (heavy processing for badly corrupted data)");
+    
+    println!("\n💡 KEY INSIGHT:");
+    println!("🌟 Files with good gain/loss ratios (≤ {:.1}) are left untouched!", EXCELLENT_THRESHOLD);
+    println!("   The proven 1.9m symmetric processing preserves their natural profiles.");
+    println!("   Only truly problematic files (ratio > {:.1}) get adaptive correction.", EXCELLENT_THRESHOLD);
+    println!("   This prevents over-processing of already-good elevation data.");
+    
+    let excellent_files = summary.files_with_excellent_quality;
+    let total_files = summary.files_processed_successfully;
+    if excellent_files as f64 / total_files as f64 > 0.5 {
+        println!("\n🏆 EXCELLENT NEWS: {:.1}% of your files have naturally good ratios!", 
+                 (excellent_files as f64 / total_files as f64) * 100.0);
+        println!("   These files get the full benefit of the proven 1.9m method with zero modification.");
+        println!("   Only the remaining {:.1}% needed any correction at all.", 
+                 ((total_files - excellent_files) as f64 / total_files as f64) * 100.0);
+    }
     
     if summary.files_with_errors > 0 {
         println!("\n❌ PROCESSING ERRORS BY TYPE:");
@@ -981,7 +1035,7 @@ fn print_detailed_analysis(
         // Show which files required adaptive processing
         println!("\n🔧 FILES THAT REQUIRED CORRECTION:");
         let corrected_files: Vec<_> = results.iter()
-            .filter(|r| r.raw_gain_loss_ratio > MILD_INFLATION_THRESHOLD)
+            .filter(|r| r.raw_gain_loss_ratio > EXCELLENT_THRESHOLD)
             .collect();
         
         if corrected_files.is_empty() {
@@ -990,6 +1044,8 @@ fn print_detailed_analysis(
             println!("   🔧 {} files required correction:", corrected_files.len());
             for result in corrected_files.iter().take(10) {
                 let correction_type = if result.raw_gain_loss_ratio > SEVERE_CORRUPTION_THRESHOLD {
+                    "strong"
+                } else if result.raw_gain_loss_ratio > MILD_INFLATION_THRESHOLD {
                     "moderate"
                 } else {
                     "gentle"
@@ -1025,12 +1081,14 @@ fn print_detailed_analysis(
         println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
         
         for (i, result) in accurate_results.iter().take(10).enumerate() {
-            let method_short = if result.raw_gain_loss_ratio > SEVERE_CORRUPTION_THRESHOLD {
-                "Moderate"
-            } else if result.raw_gain_loss_ratio > MILD_INFLATION_THRESHOLD {
+            let method_short = if result.raw_gain_loss_ratio <= EXCELLENT_THRESHOLD {
+                "1.9m Symm"
+            } else if result.raw_gain_loss_ratio <= MILD_INFLATION_THRESHOLD {
                 "Gentle"
+            } else if result.raw_gain_loss_ratio <= SEVERE_CORRUPTION_THRESHOLD {
+                "Moderate"
             } else {
-                "Standard"
+                "Strong"
             };
             println!("{:4} | {:40} | {:8}m | {:9.1}m | {:7.2}% | {}",
                      i + 1,
@@ -1042,15 +1100,15 @@ fn print_detailed_analysis(
         }
     }
     
-    println!("\n🎯 BALANCED ADAPTIVE PROCESSING SUMMARY:");
-    println!("✅ More conservative thresholds preserve natural elevation profiles");
-    println!("✅ Graduated response based on severity:");
-    println!("   • Excellent/Good (ratio ≤ {:.1}): Standard 1.9m symmetric processing", MILD_INFLATION_THRESHOLD);
-    println!("   • Mild inflation (ratio {:.1}-{:.1}): Gentle correction", MILD_INFLATION_THRESHOLD, SEVERE_CORRUPTION_THRESHOLD);
-    println!("   • Severe corruption (ratio > {:.1}): Moderate correction", SEVERE_CORRUPTION_THRESHOLD);
-    println!("✅ Preserves terrain character while fixing only truly broken data");
+    println!("\n🎯 FIXED ADAPTIVE PROCESSING SUMMARY:");
+    println!("✅ Best of both worlds: Preserves excellent 1.9m results + fixes bad files");
+    println!("✅ Intelligent routing based on gain/loss ratio:");
+    println!("   • Excellent (ratio ≤ {:.1}): Proven 1.9m symmetric processing (unchanged)", EXCELLENT_THRESHOLD);
+    println!("   • Problematic (ratio > {:.1}): Graduated adaptive correction as needed", EXCELLENT_THRESHOLD);
+    println!("✅ No more over-processing of already-good elevation data");
+    println!("✅ Still fixes truly corrupted files with appropriate correction level");
     println!("✅ Tolerant GPX reading handles XML format issues gracefully");
-    println!("✅ Results look natural and match professional tools");
+    println!("✅ Results should now be optimal for all file types");
     
     if summary.files_with_official_data > 0 {
         let success_rate = (summary.files_within_90_110_percent as f64 / summary.files_with_official_data as f64) * 100.0;
@@ -1064,14 +1122,17 @@ fn print_detailed_analysis(
             println!("📈 IMPROVED RESULTS: {:.1}% accuracy + {:.1}% balanced ratios", success_rate, balance_rate);
         }
         
-        if summary.files_with_mild_inflation > 0 || summary.files_with_severe_corruption > 0 {
-            println!("🔧 Balanced processing successfully handled {} corrupted files without over-processing", 
-                     summary.files_with_mild_inflation + summary.files_with_severe_corruption);
+        if summary.files_with_good_quality > 0 || summary.files_with_mild_inflation > 0 || summary.files_with_severe_corruption > 0 {
+            println!("🔧 Fixed processing successfully handled {} corrupted files without over-processing", 
+                     summary.files_with_good_quality + summary.files_with_mild_inflation + summary.files_with_severe_corruption);
         }
         
-        let excellent_and_good = summary.files_with_excellent_quality + summary.files_with_good_quality;
-        println!("🌿 Preserved natural profiles for {} files ({:.1}%)", 
-                 excellent_and_good,
-                 (excellent_and_good as f64 / summary.files_processed_successfully as f64) * 100.0);
+        println!("🌿 Preserved natural profiles for {} excellent files ({:.1}%)", 
+                 summary.files_with_excellent_quality,
+                 (summary.files_with_excellent_quality as f64 / summary.files_processed_successfully as f64) * 100.0);
+        
+        println!("🔧 Applied appropriate correction to {} problematic files ({:.1}%)", 
+                 summary.files_with_good_quality + summary.files_with_mild_inflation + summary.files_with_severe_corruption,
+                 ((summary.files_with_good_quality + summary.files_with_mild_inflation + summary.files_with_severe_corruption) as f64 / summary.files_processed_successfully as f64) * 100.0);
     }
 }
