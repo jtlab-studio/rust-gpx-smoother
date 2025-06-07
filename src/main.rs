@@ -82,7 +82,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("2. 🧪 Test processing on first 5 files only");
     println!("3. 📊 Analyze accuracy without saving files");
     println!("4. 🔍 Check input folder contents");
-    println!("5. 📈 Segment processed GPX files by gradient bands");
+    println!("5. 📊 Segment processed GPX files by gradient bands");
     println!("");
     
     use std::io::{self, Write};
@@ -111,8 +111,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             check_folder_contents(input_folder)?;
         },
         "5" => {
-            println!("\n📈 Segmenting processed GPX files by gradient bands...");
-            run_gradient_segmentation(output_folder)?;
+            println!("\n📊 Segmenting processed GPX files by gradient bands...");
+            run_gradient_band_segmentation(output_folder)?;
         },
         "" => {
             println!("👋 Exiting.");
@@ -451,17 +451,16 @@ fn check_folder_contents(input_folder: &str) -> Result<(), Box<dyn std::error::E
     Ok(())
 }
 
-fn run_gradient_segmentation(processed_folder: &str) -> Result<(), Box<dyn std::error::Error>> {
+fn run_gradient_band_segmentation(processed_folder: &str) -> Result<(), Box<dyn std::error::Error>> {
     use walkdir::WalkDir;
     
-    println!("📈 GRADIENT BAND SEGMENTATION");
+    println!("📊 GRADIENT BAND SEGMENTATION");
     println!("=============================");
-    println!("Analyzing processed GPX files and segmenting by gradient bands:");
-    println!("• 14 gradient bands from -30%+ to +30%+");
-    println!("• Enhanced granularity for gentle slopes (-5% to +5%)");
+    println!("Segmenting processed GPX files by gradient bands:");
+    println!("• Gradient bands from -30% to +30% in 1% increments");
+    println!("• Special bands for extreme gradients (>30% or <-30%)");
     println!("• Each segment shows length and average gradient");
-    println!("• Band distribution with accumulated km and percentages");
-    println!("• Saves CSV file for each GPX route");
+    println!("• Creates detailed CSV analysis for each route");
     println!("");
     
     // Check if processed folder exists
@@ -502,50 +501,27 @@ fn run_gradient_segmentation(processed_folder: &str) -> Result<(), Box<dyn std::
         
         println!("\n🔄 Processing {}/{}: {}", i + 1, gpx_files.len(), filename);
         
-        match segment_gpx_by_gradient(gpx_path, processed_folder) {
+        match segment_gpx_by_gradient_bands(gpx_path, processed_folder) {
             Ok(segments) => {
-                println!("   ✅ Success: {} detailed segments identified", segments.len());
+                println!("   ✅ Success: {} gradient segments identified", segments.len());
                 
-                // Apply terrain-aware reduction
-                let simplified_segments = apply_terrain_aware_reduction(&segments);
-                println!("   🎯 Simplified to {} major terrain segments", simplified_segments.len());
+                // Print summary statistics
+                let total_distance: f64 = segments.iter().map(|s| s.length_km).sum();
+                let steepest_up = segments.iter()
+                    .filter(|s| s.average_gradient_percent > 0.0)
+                    .map(|s| s.average_gradient_percent)
+                    .fold(0.0, f64::max);
+                let steepest_down = segments.iter()
+                    .filter(|s| s.average_gradient_percent < 0.0)
+                    .map(|s| s.average_gradient_percent)
+                    .fold(0.0, f64::min);
                 
-                // Apply peak/trough segmentation
-                let peak_trough_segments = apply_peak_trough_segmentation(gpx_path)?;
-                println!("   🏔️  Peak/trough analysis: {} natural segments", peak_trough_segments.len());
+                let extreme_segments = segments.iter()
+                    .filter(|s| s.average_gradient_percent.abs() > 30.0)
+                    .count();
                 
-                // Print summary of gradient distribution
-                let mut band_counts = [0u32; 14];
-                let mut band_distances = [0.0f64; 14];
-                let mut band_gradients: Vec<Vec<f64>> = (0..14).map(|_| Vec::new()).collect();
-                let mut total_distance = 0.0;
-                
-                for segment in &segments {
-                    let band_idx = (segment.band_id as usize).saturating_sub(1);
-                    if band_idx < 14 {
-                        band_counts[band_idx] += 1;
-                        band_distances[band_idx] += segment.length_km;
-                        band_gradients[band_idx].push(segment.average_gradient_percent as f64);
-                    }
-                    total_distance += segment.length_km;
-                }
-                
-                println!("   📊 Total distance: {:.2}km", total_distance);
-                println!("   📈 Band distribution:");
-                for (i, &count) in band_counts.iter().enumerate() {
-                    if count > 0 {
-                        let band = get_gradient_band_info(i + 1);
-                        let distance = band_distances[i];
-                        let percentage = if total_distance > 0.0 { (distance / total_distance) * 100.0 } else { 0.0 };
-                        let avg_gradient = if !band_gradients[i].is_empty() {
-                            band_gradients[i].iter().sum::<f64>() / band_gradients[i].len() as f64
-                        } else {
-                            0.0
-                        };
-                        println!("      Band {}: {} ({:.2}km, {:.1}%, avg {:.0}%)", 
-                                 i + 1, band.label, distance, percentage, avg_gradient);
-                    }
-                }
+                println!("   📊 Distance: {:.2}km | Steepest: +{:.0}%/{:.0}% | Extreme: {} segments", 
+                         total_distance, steepest_up, steepest_down, extreme_segments);
                 
                 processed_count += 1;
             }
@@ -556,12 +532,12 @@ fn run_gradient_segmentation(processed_folder: &str) -> Result<(), Box<dyn std::
         }
     }
     
-    println!("\n📊 SEGMENTATION COMPLETE");
-    println!("========================");
+    println!("\n📊 GRADIENT BAND SEGMENTATION COMPLETE");
+    println!("======================================");
     println!("• Files processed: {}", processed_count);
     println!("• Errors: {}", error_count);
     println!("• CSV files saved to: {}", processed_folder);
-    println!("• Each CSV contains segment analysis with length and gradient");
+    println!("• Each CSV contains gradient band analysis with average gradients");
     
     Ok(())
 }
@@ -569,82 +545,18 @@ fn run_gradient_segmentation(processed_folder: &str) -> Result<(), Box<dyn std::
 #[derive(Debug, Clone)]
 struct GradientSegment {
     segment_id: u32,
-    band_id: u32,
+    gradient_band: i32,  // -31 for <-30%, -30 to +30 for normal bands, +31 for >+30%
     band_label: String,
     start_distance_km: f64,
     end_distance_km: f64,
     length_km: f64,
-    average_gradient_percent: f64,  // Changed to f64 for consistency
+    average_gradient_percent: f64,
     min_elevation_m: f64,
     max_elevation_m: f64,
     elevation_change_m: f64,
 }
 
-#[derive(Debug, Clone)]
-struct PeakTroughSegment {
-    segment_id: u32,
-    segment_type: String,  // "Climb", "Descent", "Flat"
-    start_distance_km: f64,
-    end_distance_km: f64,
-    length_km: f64,
-    elevation_change_m: f64,
-    average_gradient_percent: f64,
-    start_elevation_m: f64,
-    end_elevation_m: f64,
-    peak_elevation_m: f64,
-    trough_elevation_m: f64,
-    prominence_m: f64,
-}
-    id: u32,
-    min_gradient: f64,
-    max_gradient: f64,
-    label: String,
-    notes: String,
-}
-
-fn get_gradient_band_info(band_id: usize) -> GradientBand {
-    let bands = [
-        GradientBand { id: 1, min_gradient: f64::NEG_INFINITY, max_gradient: -30.0, label: "Insanely Steep Downhill".to_string(), notes: "Scramble / dangerous terrain".to_string() },
-        GradientBand { id: 2, min_gradient: -30.0, max_gradient: -20.0, label: "Extreme Downhill".to_string(), notes: "Sliding or ropes possibly needed".to_string() },
-        GradientBand { id: 3, min_gradient: -20.0, max_gradient: -12.0, label: "Very Steep Downhill".to_string(), notes: "Hard braking, very technical".to_string() },
-        GradientBand { id: 4, min_gradient: -12.0, max_gradient: -8.0, label: "Steep Downhill".to_string(), notes: "Technical running".to_string() },
-        GradientBand { id: 5, min_gradient: -8.0, max_gradient: -5.0, label: "Moderate Downhill".to_string(), notes: "Controlled descent".to_string() },
-        GradientBand { id: 6, min_gradient: -5.0, max_gradient: -2.5, label: "Gentle Downhill (Steep)".to_string(), notes: "Upper gentle downhill".to_string() },
-        GradientBand { id: 7, min_gradient: -2.5, max_gradient: 0.0, label: "Gentle Downhill (Shallow)".to_string(), notes: "Lower gentle downhill".to_string() },
-        GradientBand { id: 8, min_gradient: 0.0, max_gradient: 2.5, label: "Gentle Uphill (Shallow)".to_string(), notes: "Lower gentle uphill".to_string() },
-        GradientBand { id: 9, min_gradient: 2.5, max_gradient: 5.0, label: "Gentle Uphill (Steep)".to_string(), notes: "Upper gentle uphill".to_string() },
-        GradientBand { id: 10, min_gradient: 5.0, max_gradient: 8.0, label: "Moderate Uphill".to_string(), notes: "Gradual effort".to_string() },
-        GradientBand { id: 11, min_gradient: 8.0, max_gradient: 12.0, label: "Steep Uphill".to_string(), notes: "Sustained climbing".to_string() },
-        GradientBand { id: 12, min_gradient: 12.0, max_gradient: 20.0, label: "Very Steep Uphill".to_string(), notes: "Hiking grade".to_string() },
-        GradientBand { id: 13, min_gradient: 20.0, max_gradient: 30.0, label: "Extreme Uphill".to_string(), notes: "Power-hiking or poles needed".to_string() },
-        GradientBand { id: 14, min_gradient: 30.0, max_gradient: f64::INFINITY, label: "Insanely Steep Uphill".to_string(), notes: "Scramble or climb".to_string() },
-    ];
-    
-    if band_id > 0 && band_id <= bands.len() {
-        bands[band_id - 1].clone()
-    } else {
-        GradientBand { id: 8, min_gradient: 0.0, max_gradient: 2.5, label: "Gentle Uphill (Shallow)".to_string(), notes: "Default".to_string() }
-    }
-}
-
-fn classify_gradient(gradient_percent: f64) -> u32 {
-    if gradient_percent <= -30.0 { 1 }        // Insanely Steep Downhill
-    else if gradient_percent <= -20.0 { 2 }   // Extreme Downhill
-    else if gradient_percent <= -12.0 { 3 }   // Very Steep Downhill
-    else if gradient_percent <= -8.0 { 4 }    // Steep Downhill
-    else if gradient_percent <= -5.0 { 5 }    // Moderate Downhill
-    else if gradient_percent <= -2.5 { 6 }    // Gentle Downhill (Steep)
-    else if gradient_percent < 0.0 { 7 }      // Gentle Downhill (Shallow)
-    else if gradient_percent < 2.5 { 8 }      // Gentle Uphill (Shallow)
-    else if gradient_percent < 5.0 { 9 }      // Gentle Uphill (Steep)
-    else if gradient_percent < 8.0 { 10 }     // Moderate Uphill
-    else if gradient_percent < 12.0 { 11 }    // Steep Uphill
-    else if gradient_percent < 20.0 { 12 }    // Very Steep Uphill
-    else if gradient_percent < 30.0 { 13 }    // Extreme Uphill
-    else { 14 }                              // Insanely Steep Uphill
-}
-
-fn segment_gpx_by_gradient(
+fn segment_gpx_by_gradient_bands(
     gpx_path: &Path,
     output_folder: &str
 ) -> Result<Vec<GradientSegment>, Box<dyn std::error::Error>> {
@@ -689,7 +601,10 @@ fn segment_gpx_by_gradient(
         } else {
             0.0
         };
-        gradients.push((gradient_percent, classify_gradient(gradient_percent)));
+        
+        // Classify into gradient band
+        let gradient_band = classify_gradient_to_band(gradient_percent);
+        gradients.push((gradient_percent, gradient_band));
     }
     
     // Group consecutive points with same gradient band into segments
@@ -707,7 +622,7 @@ fn segment_gpx_by_gradient(
                 segment_gradients.push(gradients[i].0);
             } else {
                 // End current segment and start new one
-                let segment = create_segment(
+                let segment = create_gradient_segment(
                     segment_id,
                     current_band,
                     segment_start,
@@ -727,7 +642,7 @@ fn segment_gpx_by_gradient(
         }
         
         // Don't forget the last segment
-        let segment = create_segment(
+        let segment = create_gradient_segment(
             segment_id,
             current_band,
             segment_start,
@@ -739,27 +654,41 @@ fn segment_gpx_by_gradient(
         segments.push(segment);
     }
     
-    // Apply terrain-aware reduction for simplified version
-    let simplified_segments = apply_terrain_aware_reduction(&segments);
-    
-    // Save segments to CSV (detailed, simplified, and peak/trough)
-    save_segments_to_csv(gpx_path, output_folder, &segments)?;
-    save_simplified_segments_to_csv(gpx_path, output_folder, &simplified_segments)?;
-    save_peak_trough_segments_to_csv(gpx_path, output_folder, &peak_trough_segments)?;
+    // Save segments to CSV
+    save_gradient_segments_csv(gpx_path, output_folder, &segments)?;
     
     Ok(segments)
 }
 
-fn create_segment(
+fn classify_gradient_to_band(gradient_percent: f64) -> i32 {
+    if gradient_percent < -30.0 {
+        -31  // Extreme downhill
+    } else if gradient_percent > 30.0 {
+        31   // Extreme uphill
+    } else {
+        // Round to nearest whole number for bands -30 to +30
+        gradient_percent.round() as i32
+    }
+}
+
+fn get_band_label(gradient_band: i32) -> String {
+    match gradient_band {
+        -31 => "Extreme Downhill (<-30%)".to_string(),
+        31 => "Extreme Uphill (>+30%)".to_string(),
+        _ => format!("{}%", gradient_band)
+    }
+}
+
+fn create_gradient_segment(
     segment_id: u32,
-    band_id: u32,
+    gradient_band: i32,
     start_idx: usize,
     end_idx: usize,
     distances: &[f64],
     coords: &[(f64, f64, f64)],
     gradients: &[f64]
 ) -> GradientSegment {
-    let band_info = get_gradient_band_info(band_id as usize);
+    let band_label = get_band_label(gradient_band);
     
     let start_distance_km = distances[start_idx] / 1000.0;
     let end_distance_km = distances[end_idx] / 1000.0;
@@ -785,8 +714,8 @@ fn create_segment(
     
     GradientSegment {
         segment_id,
-        band_id,
-        band_label: band_info.label,
+        gradient_band,
+        band_label,
         start_distance_km,
         end_distance_km,
         length_km,
@@ -797,7 +726,7 @@ fn create_segment(
     }
 }
 
-fn save_segments_to_csv(
+fn save_gradient_segments_csv(
     gpx_path: &Path,
     output_folder: &str,
     segments: &[GradientSegment]
@@ -808,55 +737,277 @@ fn save_segments_to_csv(
     let filename = gpx_path.file_stem()
         .and_then(|n| n.to_str())
         .unwrap_or("unknown");
-    let csv_filename = format!("{}.csv", filename);
+    let csv_filename = format!("{}_gradient_bands.csv", filename);
     let csv_path = Path::new(output_folder).join(csv_filename);
     
     // Calculate band statistics
-    let mut band_distances = [0.0f64; 14];
-    let mut band_gradients: Vec<Vec<f64>> = (0..14).map(|_| Vec::new()).collect();
+    let mut band_distances = std::collections::HashMap::new();
+    let mut band_gradients: std::collections::HashMap<i32, Vec<f64>> = std::collections::HashMap::new();
+    let mut band_longest_segments: std::collections::HashMap<i32, (f64, f64)> = std::collections::HashMap::new(); // (length, gradient)
     let mut total_distance = 0.0;
     
+    // Calculate terrain distribution
+    let mut km_below_minus2 = 0.0;
+    let mut km_minus2_to_plus2 = 0.0;
+    let mut km_above_plus2 = 0.0;
+    
+    // Detailed uphill segmentation (above +2%)
+    let mut km_2_to_7 = 0.0;    // 2% to 7%
+    let mut km_7_to_12 = 0.0;   // 7% to 12%
+    let mut km_12_to_17 = 0.0;  // 12% to 17%
+    let mut km_17_to_22 = 0.0;  // 17% to 22%
+    let mut km_22_to_27 = 0.0;  // 22% to 27%
+    let mut km_above_27 = 0.0;  // Above 27%
+    
+    // Detailed downhill segmentation (below -2%)
+    let mut km_minus2_to_minus7 = 0.0;    // -2% to -7%
+    let mut km_minus7_to_minus12 = 0.0;   // -7% to -12%
+    let mut km_minus12_to_minus17 = 0.0;  // -12% to -17%
+    let mut km_minus17_to_minus22 = 0.0;  // -17% to -22%
+    let mut km_minus22_to_minus27 = 0.0;  // -22% to -27%
+    let mut km_below_minus27 = 0.0;       // Below -27%
+    
     for segment in segments {
-        let band_idx = (segment.band_id as usize).saturating_sub(1);
-        if band_idx < 14 {
-            band_distances[band_idx] += segment.length_km;
-            band_gradients[band_idx].push(segment.average_gradient_percent as f64);
+        let band = segment.gradient_band;
+        *band_distances.entry(band).or_insert(0.0) += segment.length_km;
+        band_gradients.entry(band).or_insert_with(Vec::new).push(segment.average_gradient_percent);
+        
+        // Track longest segment per band
+        let current_longest = band_longest_segments.get(&band).map(|(len, _)| *len).unwrap_or(0.0);
+        if segment.length_km > current_longest {
+            band_longest_segments.insert(band, (segment.length_km, segment.average_gradient_percent));
         }
+        
         total_distance += segment.length_km;
+        
+        let grad = segment.average_gradient_percent;
+        
+        // Main terrain distribution
+        if grad < -2.0 {
+            km_below_minus2 += segment.length_km;
+            
+            // Detailed downhill segmentation
+            if grad >= -7.0 {
+                km_minus2_to_minus7 += segment.length_km;
+            } else if grad >= -12.0 {
+                km_minus7_to_minus12 += segment.length_km;
+            } else if grad >= -17.0 {
+                km_minus12_to_minus17 += segment.length_km;
+            } else if grad >= -22.0 {
+                km_minus17_to_minus22 += segment.length_km;
+            } else if grad >= -27.0 {
+                km_minus22_to_minus27 += segment.length_km;
+            } else {
+                km_below_minus27 += segment.length_km;
+            }
+        } else if grad >= -2.0 && grad <= 2.0 {
+            km_minus2_to_plus2 += segment.length_km;
+        } else {
+            km_above_plus2 += segment.length_km;
+            
+            // Detailed uphill segmentation
+            if grad <= 7.0 {
+                km_2_to_7 += segment.length_km;
+            } else if grad <= 12.0 {
+                km_7_to_12 += segment.length_km;
+            } else if grad <= 17.0 {
+                km_12_to_17 += segment.length_km;
+            } else if grad <= 22.0 {
+                km_17_to_22 += segment.length_km;
+            } else if grad <= 27.0 {
+                km_22_to_27 += segment.length_km;
+            } else {
+                km_above_27 += segment.length_km;
+            }
+        }
     }
     
     // Write CSV
     let mut wtr = Writer::from_path(csv_path)?;
     
     // Write route summary header
-    wtr.write_record(&["ROUTE SUMMARY", "", "", "", "", "", "", "", "", ""])?;
+    wtr.write_record(&["GRADIENT BAND ANALYSIS", "", "", "", "", "", "", "", "", ""])?;
+    wtr.write_record(&["Method", "Whole Number Gradient Bands (-30% to +30%)", "", "", "", "", "", "", "", ""])?;
     wtr.write_record(&["Total Distance (km)", &format!("{:.3}", total_distance), "", "", "", "", "", "", "", ""])?;
     wtr.write_record(&["Total Segments", &segments.len().to_string(), "", "", "", "", "", "", "", ""])?;
     wtr.write_record(&["", "", "", "", "", "", "", "", "", ""])?; // Empty row
     
+    // Write terrain distribution
+    wtr.write_record(&["TERRAIN DISTRIBUTION", "", "", "", "", "", "", "", "", ""])?;
+    wtr.write_record(&["Category", "Distance_km", "Percentage_%", "", "", "", "", "", "", ""])?;
+    wtr.write_record(&[
+        "Below -2% (Significant Downhill)",
+        &format!("{:.3}", km_below_minus2),
+        &format!("{:.1}", if total_distance > 0.0 { (km_below_minus2 / total_distance) * 100.0 } else { 0.0 }),
+        "", "", "", "", "", "", ""
+    ])?;
+    wtr.write_record(&[
+        "-2% to +2% (Nearly Flat)",
+        &format!("{:.3}", km_minus2_to_plus2),
+        &format!("{:.1}", if total_distance > 0.0 { (km_minus2_to_plus2 / total_distance) * 100.0 } else { 0.0 }),
+        "", "", "", "", "", "", ""
+    ])?;
+    wtr.write_record(&[
+        "Above +2% (Significant Uphill)",
+        &format!("{:.3}", km_above_plus2),
+        &format!("{:.1}", if total_distance > 0.0 { (km_above_plus2 / total_distance) * 100.0 } else { 0.0 }),
+        "", "", "", "", "", "", ""
+    ])?;
+    wtr.write_record(&["", "", "", "", "", "", "", "", "", ""])?; // Empty row
+    
+    // Detailed uphill breakdown
+    wtr.write_record(&["UPHILL BREAKDOWN (Above +2%)", "", "", "", "", "", "", "", "", ""])?;
+    wtr.write_record(&["Gradient_Range", "Distance_km", "Percentage_%", "% of Total Route", "", "", "", "", "", ""])?;
+    
+    if km_2_to_7 > 0.0 {
+        wtr.write_record(&[
+            "+2% to +7% (Moderate)",
+            &format!("{:.3}", km_2_to_7),
+            &format!("{:.1}", if km_above_plus2 > 0.0 { (km_2_to_7 / km_above_plus2) * 100.0 } else { 0.0 }),
+            &format!("{:.1}", if total_distance > 0.0 { (km_2_to_7 / total_distance) * 100.0 } else { 0.0 }),
+            "", "", "", "", "", ""
+        ])?;
+    }
+    if km_7_to_12 > 0.0 {
+        wtr.write_record(&[
+            "+7% to +12% (Steep)",
+            &format!("{:.3}", km_7_to_12),
+            &format!("{:.1}", if km_above_plus2 > 0.0 { (km_7_to_12 / km_above_plus2) * 100.0 } else { 0.0 }),
+            &format!("{:.1}", if total_distance > 0.0 { (km_7_to_12 / total_distance) * 100.0 } else { 0.0 }),
+            "", "", "", "", "", ""
+        ])?;
+    }
+    if km_12_to_17 > 0.0 {
+        wtr.write_record(&[
+            "+12% to +17% (Very Steep)",
+            &format!("{:.3}", km_12_to_17),
+            &format!("{:.1}", if km_above_plus2 > 0.0 { (km_12_to_17 / km_above_plus2) * 100.0 } else { 0.0 }),
+            &format!("{:.1}", if total_distance > 0.0 { (km_12_to_17 / total_distance) * 100.0 } else { 0.0 }),
+            "", "", "", "", "", ""
+        ])?;
+    }
+    if km_17_to_22 > 0.0 {
+        wtr.write_record(&[
+            "+17% to +22% (Extreme)",
+            &format!("{:.3}", km_17_to_22),
+            &format!("{:.1}", if km_above_plus2 > 0.0 { (km_17_to_22 / km_above_plus2) * 100.0 } else { 0.0 }),
+            &format!("{:.1}", if total_distance > 0.0 { (km_17_to_22 / total_distance) * 100.0 } else { 0.0 }),
+            "", "", "", "", "", ""
+        ])?;
+    }
+    if km_22_to_27 > 0.0 {
+        wtr.write_record(&[
+            "+22% to +27% (Brutal)",
+            &format!("{:.3}", km_22_to_27),
+            &format!("{:.1}", if km_above_plus2 > 0.0 { (km_22_to_27 / km_above_plus2) * 100.0 } else { 0.0 }),
+            &format!("{:.1}", if total_distance > 0.0 { (km_22_to_27 / total_distance) * 100.0 } else { 0.0 }),
+            "", "", "", "", "", ""
+        ])?;
+    }
+    if km_above_27 > 0.0 {
+        wtr.write_record(&[
+            "Above +27% (Insane)",
+            &format!("{:.3}", km_above_27),
+            &format!("{:.1}", if km_above_plus2 > 0.0 { (km_above_27 / km_above_plus2) * 100.0 } else { 0.0 }),
+            &format!("{:.1}", if total_distance > 0.0 { (km_above_27 / total_distance) * 100.0 } else { 0.0 }),
+            "", "", "", "", "", ""
+        ])?;
+    }
+    wtr.write_record(&["", "", "", "", "", "", "", "", "", ""])?; // Empty row
+    
+    // Detailed downhill breakdown
+    wtr.write_record(&["DOWNHILL BREAKDOWN (Below -2%)", "", "", "", "", "", "", "", "", ""])?;
+    wtr.write_record(&["Gradient_Range", "Distance_km", "Percentage_%", "% of Total Route", "", "", "", "", "", ""])?;
+    
+    if km_minus2_to_minus7 > 0.0 {
+        wtr.write_record(&[
+            "-2% to -7% (Moderate)",
+            &format!("{:.3}", km_minus2_to_minus7),
+            &format!("{:.1}", if km_below_minus2 > 0.0 { (km_minus2_to_minus7 / km_below_minus2) * 100.0 } else { 0.0 }),
+            &format!("{:.1}", if total_distance > 0.0 { (km_minus2_to_minus7 / total_distance) * 100.0 } else { 0.0 }),
+            "", "", "", "", "", ""
+        ])?;
+    }
+    if km_minus7_to_minus12 > 0.0 {
+        wtr.write_record(&[
+            "-7% to -12% (Steep)",
+            &format!("{:.3}", km_minus7_to_minus12),
+            &format!("{:.1}", if km_below_minus2 > 0.0 { (km_minus7_to_minus12 / km_below_minus2) * 100.0 } else { 0.0 }),
+            &format!("{:.1}", if total_distance > 0.0 { (km_minus7_to_minus12 / total_distance) * 100.0 } else { 0.0 }),
+            "", "", "", "", "", ""
+        ])?;
+    }
+    if km_minus12_to_minus17 > 0.0 {
+        wtr.write_record(&[
+            "-12% to -17% (Very Steep)",
+            &format!("{:.3}", km_minus12_to_minus17),
+            &format!("{:.1}", if km_below_minus2 > 0.0 { (km_minus12_to_minus17 / km_below_minus2) * 100.0 } else { 0.0 }),
+            &format!("{:.1}", if total_distance > 0.0 { (km_minus12_to_minus17 / total_distance) * 100.0 } else { 0.0 }),
+            "", "", "", "", "", ""
+        ])?;
+    }
+    if km_minus17_to_minus22 > 0.0 {
+        wtr.write_record(&[
+            "-17% to -22% (Extreme)",
+            &format!("{:.3}", km_minus17_to_minus22),
+            &format!("{:.1}", if km_below_minus2 > 0.0 { (km_minus17_to_minus22 / km_below_minus2) * 100.0 } else { 0.0 }),
+            &format!("{:.1}", if total_distance > 0.0 { (km_minus17_to_minus22 / total_distance) * 100.0 } else { 0.0 }),
+            "", "", "", "", "", ""
+        ])?;
+    }
+    if km_minus22_to_minus27 > 0.0 {
+        wtr.write_record(&[
+            "-22% to -27% (Brutal)",
+            &format!("{:.3}", km_minus22_to_minus27),
+            &format!("{:.1}", if km_below_minus2 > 0.0 { (km_minus22_to_minus27 / km_below_minus2) * 100.0 } else { 0.0 }),
+            &format!("{:.1}", if total_distance > 0.0 { (km_minus22_to_minus27 / total_distance) * 100.0 } else { 0.0 }),
+            "", "", "", "", "", ""
+        ])?;
+    }
+    if km_below_minus27 > 0.0 {
+        wtr.write_record(&[
+            "Below -27% (Insane)",
+            &format!("{:.3}", km_below_minus27),
+            &format!("{:.1}", if km_below_minus2 > 0.0 { (km_below_minus27 / km_below_minus2) * 100.0 } else { 0.0 }),
+            &format!("{:.1}", if total_distance > 0.0 { (km_below_minus27 / total_distance) * 100.0 } else { 0.0 }),
+            "", "", "", "", "", ""
+        ])?;
+    }
+    wtr.write_record(&["", "", "", "", "", "", "", "", "", ""])?; // Empty row
+    
     // Write band distribution summary
     wtr.write_record(&["GRADIENT BAND DISTRIBUTION", "", "", "", "", "", "", "", "", ""])?;
-    wtr.write_record(&["Band_ID", "Band_Label", "Total_Distance_km", "Percentage_%", "Avg_Gradient_%", "Notes", "", "", "", ""])?;
+    wtr.write_record(&["Band", "Band_Label", "Total_Distance_km", "Percentage_%", "Avg_Gradient_%", "Segment_Count", "Longest_Segment_km", "Longest_Gradient_%", "", ""])?;
     
-    for i in 0..14 {
-        let band = get_gradient_band_info(i + 1);
-        let distance = band_distances[i];
+    // Sort bands for logical display
+    let mut band_keys: Vec<_> = band_distances.keys().collect();
+    band_keys.sort();
+    
+    for &band in &band_keys {
+        let distance = band_distances[band];
         let percentage = if total_distance > 0.0 { (distance / total_distance) * 100.0 } else { 0.0 };
-        let avg_gradient = if !band_gradients[i].is_empty() {
-            band_gradients[i].iter().sum::<f64>() / band_gradients[i].len() as f64
+        let avg_gradient = if let Some(gradients) = band_gradients.get(band) {
+            if !gradients.is_empty() {
+                gradients.iter().sum::<f64>() / gradients.len() as f64
+            } else {
+                0.0
+            }
         } else {
             0.0
         };
         
+        let segment_count = segments.iter().filter(|s| s.gradient_band == *band).count();
+        let (longest_length, longest_gradient) = band_longest_segments.get(band).unwrap_or(&(0.0, 0.0));
+        
         wtr.write_record(&[
-            (i + 1).to_string(),
-            band.label,
+            band.to_string(),
+            get_band_label(*band),
             format!("{:.3}", distance),
             format!("{:.1}", percentage),
-            format!("{:.1}", avg_gradient),  // Changed to 1 decimal place
-            band.notes,
-            "".to_string(),
-            "".to_string(),
+            format!("{:.1}", avg_gradient),
+            segment_count.to_string(),
+            format!("{:.3}", longest_length),
+            format!("{:.1}", longest_gradient),
             "".to_string(),
             "".to_string(),
         ])?;
@@ -869,330 +1020,22 @@ fn save_segments_to_csv(
     wtr.write_record(&["DETAILED SEGMENTS", "", "", "", "", "", "", "", "", ""])?;
     wtr.write_record(&[
         "Segment_ID",
-        "Band_ID", 
-        "Gradient_Band",
+        "Gradient_Band", 
+        "Band_Label",
         "Start_Distance_km",
         "End_Distance_km", 
         "Length_km",
         "Average_Gradient_%",
         "Min_Elevation_m",
         "Max_Elevation_m",
-        "Elevation_Change_m"
+        ""
     ])?;
     
     // Write detailed segment data
     for segment in segments {
         wtr.write_record(&[
             segment.segment_id.to_string(),
-            segment.band_id.to_string(),
-            segment.band_label.clone(),
-            format!("{:.3}", segment.start_distance_km),
-            format!("{:.3}", segment.end_distance_km),
-            format!("{:.3}", segment.length_km),
-            format!("{:.1}", segment.average_gradient_percent),  // Changed to 1 decimal place
-            format!("{:.1}", segment.min_elevation_m),
-            format!("{:.1}", segment.max_elevation_m),
-            format!("{:.1}", segment.elevation_change_m),
-        ])?;
-    }
-    
-#[derive(Debug, Clone)]
-struct GradientBand {
-
-fn apply_terrain_aware_reduction(segments: &[GradientSegment]) -> Vec<GradientSegment> {
-    if segments.is_empty() {
-        return vec![];
-    }
-    
-    // Step 1: Identify major elevation features (peaks/valleys with >50m prominence)
-    let major_features = identify_major_elevation_features(segments);
-    
-    // Step 2: Merge consecutive segments with similar gradients (±2% difference)  
-    let gradient_merged = merge_similar_gradients(segments, &major_features);
-    
-    // Step 3: Apply minimum segment length (200m = 0.2km minimum)
-    let length_filtered = apply_minimum_segment_length(gradient_merged, 0.2);
-    
-    length_filtered
-}
-
-fn identify_major_elevation_features(segments: &[GradientSegment]) -> Vec<usize> {
-    let mut major_features = Vec::new();
-    
-    if segments.len() < 3 {
-        return (0..segments.len()).collect();
-    }
-    
-    // Always keep first and last segments
-    major_features.push(0);
-    
-    // Find peaks and valleys with significant prominence
-    for i in 1..segments.len()-1 {
-        let prev_elevation = segments[i-1].max_elevation_m;
-        let curr_elevation = segments[i].max_elevation_m;
-        let next_elevation = segments[i+1].max_elevation_m;
-        
-        // Check for peak (higher than both neighbors by >50m)
-        let is_peak = curr_elevation > prev_elevation + 50.0 && curr_elevation > next_elevation + 50.0;
-        
-        // Check for valley (lower than both neighbors by >50m)  
-        let is_valley = curr_elevation + 50.0 < prev_elevation && curr_elevation + 50.0 < next_elevation;
-        
-        // Keep segments with extreme gradients regardless
-        let extreme_gradient = segments[i].average_gradient_percent.abs() > 15.0;
-        
-        if is_peak || is_valley || extreme_gradient {
-            major_features.push(i);
-        }
-    }
-    
-    major_features.push(segments.len() - 1);
-    major_features
-}
-
-fn merge_similar_gradients(segments: &[GradientSegment], major_features: &[usize]) -> Vec<GradientSegment> {
-    if segments.is_empty() {
-        return vec![];
-    }
-    
-    let mut merged_segments = Vec::new();
-    let mut current_group = vec![0]; // Start with first segment
-    
-    for i in 1..segments.len() {
-        let prev_gradient = segments[current_group[0]].average_gradient_percent;
-        let curr_gradient = segments[i].average_gradient_percent;
-        let gradient_diff = (curr_gradient - prev_gradient).abs();
-        
-        // Check if this segment should start a new group
-        let is_major_feature = major_features.contains(&i);
-        let different_gradient = gradient_diff > 2.0; // ±2% difference threshold
-        let different_band = segments[i].band_id != segments[current_group[0]].band_id;
-        
-        if is_major_feature || different_gradient || different_band {
-            // Finish current group and start new one
-            if !current_group.is_empty() {
-                merged_segments.push(merge_segment_group(segments, &current_group));
-            }
-            current_group = vec![i];
-        } else {
-            // Add to current group
-            current_group.push(i);
-        }
-    }
-    
-    // Don't forget the last group
-    if !current_group.is_empty() {
-        merged_segments.push(merge_segment_group(segments, &current_group));
-    }
-    
-    merged_segments
-}
-
-fn merge_segment_group(segments: &[GradientSegment], group_indices: &[usize]) -> GradientSegment {
-    if group_indices.is_empty() {
-        // Return a default segment if group is empty
-        return GradientSegment {
-            segment_id: 1,
-            band_id: 7,
-            band_label: "Gentle Uphill (Shallow)".to_string(),
-            start_distance_km: 0.0,
-            end_distance_km: 0.0,
-            length_km: 0.0,
-            average_gradient_percent: 0.0,
-            min_elevation_m: 0.0,
-            max_elevation_m: 0.0,
-            elevation_change_m: 0.0,
-        };
-    }
-    
-    if group_indices.len() == 1 {
-        return segments[group_indices[0]].clone();
-    }
-    
-    // Merge multiple segments
-    let first_idx = group_indices[0];
-    let last_idx = group_indices[group_indices.len() - 1];
-    
-    let start_distance_km = segments[first_idx].start_distance_km;
-    let end_distance_km = segments[last_idx].end_distance_km;
-    let length_km = end_distance_km - start_distance_km;
-    
-    // Calculate weighted average gradient
-    let mut total_gradient_weighted = 0.0;
-    let mut total_length = 0.0;
-    let mut min_elevation = f64::INFINITY;
-    let mut max_elevation = f64::NEG_INFINITY;
-    
-    for &idx in group_indices {
-        let segment = &segments[idx];
-        total_gradient_weighted += segment.average_gradient_percent as f64 * segment.length_km;
-        total_length += segment.length_km;
-        min_elevation = min_elevation.min(segment.min_elevation_m);
-        max_elevation = max_elevation.max(segment.max_elevation_m);
-    }
-    
-    let average_gradient = if total_length > 0.0 {
-        total_gradient_weighted / total_length
-    } else {
-        segments[first_idx].average_gradient_percent
-    };
-    
-    // Use the most common band in the group
-    let band_id = segments[first_idx].band_id;
-    let band_info = get_gradient_band_info(band_id as usize);
-    
-    GradientSegment {
-        segment_id: segments[first_idx].segment_id,
-        band_id,
-        band_label: band_info.label,
-        start_distance_km,
-        end_distance_km,
-        length_km,
-        average_gradient_percent: average_gradient,
-        min_elevation_m: min_elevation,
-        max_elevation_m: max_elevation,
-        elevation_change_m: max_elevation - min_elevation,
-    }
-}
-
-fn apply_minimum_segment_length(segments: Vec<GradientSegment>, min_length_km: f64) -> Vec<GradientSegment> {
-    if segments.is_empty() {
-        return vec![];
-    }
-    
-    let mut filtered_segments = Vec::new();
-    let mut pending_merge = Vec::new();
-    
-    for segment in segments {
-        if segment.length_km >= min_length_km {
-            // This segment is long enough
-            if !pending_merge.is_empty() {
-                // Merge any pending short segments with this one
-                pending_merge.push(segment);
-                let merged = merge_segment_group(&pending_merge, &(0..pending_merge.len()).collect::<Vec<_>>());
-                filtered_segments.push(merged);
-                pending_merge.clear();
-            } else {
-                filtered_segments.push(segment);
-            }
-        } else {
-            // This segment is too short, add to pending merge
-            pending_merge.push(segment);
-        }
-    }
-    
-    // Handle any remaining pending segments
-    if !pending_merge.is_empty() {
-        if !filtered_segments.is_empty() {
-            // Merge with the last segment
-            let last_segment = filtered_segments.pop().unwrap();
-            pending_merge.insert(0, last_segment);
-            let merged = merge_segment_group(&pending_merge, &(0..pending_merge.len()).collect::<Vec<_>>());
-            filtered_segments.push(merged);
-        } else {
-            // All segments were too short, just merge them all
-            let merged = merge_segment_group(&pending_merge, &(0..pending_merge.len()).collect::<Vec<_>>());
-            filtered_segments.push(merged);
-        }
-    }
-    
-    // Renumber segments
-    for (i, segment) in filtered_segments.iter_mut().enumerate() {
-        segment.segment_id = (i + 1) as u32;
-    }
-    
-    filtered_segments
-}
-
-fn save_simplified_segments_to_csv(
-    gpx_path: &Path,
-    output_folder: &str,
-    segments: &[GradientSegment]
-) -> Result<(), Box<dyn std::error::Error>> {
-    use csv::Writer;
-    
-    // Generate CSV filename for simplified version
-    let filename = gpx_path.file_stem()
-        .and_then(|n| n.to_str())
-        .unwrap_or("unknown");
-    let csv_filename = format!("{}_simplified.csv", filename);
-    let csv_path = Path::new(output_folder).join(csv_filename);
-    
-    // Calculate band statistics for simplified segments
-    let mut band_distances = [0.0f64; 14];
-    let mut band_gradients: Vec<Vec<f64>> = (0..14).map(|_| Vec::new()).collect();
-    let mut total_distance = 0.0;
-    
-    for segment in segments {
-        let band_idx = (segment.band_id as usize).saturating_sub(1);
-        if band_idx < 14 {
-            band_distances[band_idx] += segment.length_km;
-            band_gradients[band_idx].push(segment.average_gradient_percent as f64);
-        }
-        total_distance += segment.length_km;
-    }
-    
-    // Write CSV
-    let mut wtr = Writer::from_path(csv_path)?;
-    
-    // Write route summary header
-    wtr.write_record(&["SIMPLIFIED TERRAIN ANALYSIS", "", "", "", "", "", "", "", "", ""])?;
-    wtr.write_record(&["Method", "Prominence + Gradient Similarity + Min Length", "", "", "", "", "", "", "", ""])?;
-    wtr.write_record(&["Total Distance (km)", &format!("{:.3}", total_distance), "", "", "", "", "", "", "", ""])?;
-    wtr.write_record(&["Simplified Segments", &segments.len().to_string(), "", "", "", "", "", "", "", ""])?;
-    wtr.write_record(&["", "", "", "", "", "", "", "", "", ""])?; // Empty row
-    
-    // Write band distribution summary
-    wtr.write_record(&["GRADIENT BAND DISTRIBUTION (SIMPLIFIED)", "", "", "", "", "", "", "", "", ""])?;
-    wtr.write_record(&["Band_ID", "Band_Label", "Total_Distance_km", "Percentage_%", "Avg_Gradient_%", "Notes", "", "", "", ""])?;
-    
-    for i in 0..14 {
-        let band = get_gradient_band_info(i + 1);
-        let distance = band_distances[i];
-        let percentage = if total_distance > 0.0 { (distance / total_distance) * 100.0 } else { 0.0 };
-        let avg_gradient = if !band_gradients[i].is_empty() {
-            band_gradients[i].iter().sum::<f64>() / band_gradients[i].len() as f64
-        } else {
-            0.0
-        };
-        
-        wtr.write_record(&[
-            (i + 1).to_string(),
-            band.label,
-            format!("{:.3}", distance),
-            format!("{:.1}", percentage),
-            format!("{:.1}", avg_gradient),
-            band.notes,
-            "".to_string(),
-            "".to_string(),
-            "".to_string(),
-            "".to_string(),
-        ])?;
-    }
-    
-    wtr.write_record(&["", "", "", "", "", "", "", "", "", ""])?; // Empty row
-    wtr.write_record(&["", "", "", "", "", "", "", "", "", ""])?; // Empty row
-    
-    // Write simplified segments header
-    wtr.write_record(&["MAJOR TERRAIN SEGMENTS", "", "", "", "", "", "", "", "", ""])?;
-    wtr.write_record(&[
-        "Segment_ID",
-        "Band_ID", 
-        "Gradient_Band",
-        "Start_Distance_km",
-        "End_Distance_km", 
-        "Length_km",
-        "Average_Gradient_%",
-        "Min_Elevation_m",
-        "Max_Elevation_m",
-        "Elevation_Change_m"
-    ])?;
-    
-    // Write simplified segment data
-    for segment in segments {
-        wtr.write_record(&[
-            segment.segment_id.to_string(),
-            segment.band_id.to_string(),
+            segment.gradient_band.to_string(),
             segment.band_label.clone(),
             format!("{:.3}", segment.start_distance_km),
             format!("{:.3}", segment.end_distance_km),
@@ -1200,361 +1043,7 @@ fn save_simplified_segments_to_csv(
             format!("{:.1}", segment.average_gradient_percent),
             format!("{:.1}", segment.min_elevation_m),
             format!("{:.1}", segment.max_elevation_m),
-            format!("{:.1}", segment.elevation_change_m),
-        ])?;
-    }
-    
-    wtr.flush()?;
-    Ok(())
-}
-
-#[derive(Debug, Clone)]
-struct PeakTroughSegment {
-    segment_id: u32,
-    segment_type: String,  // "Climb", "Descent", "Flat"
-    start_distance_km: f64,
-    end_distance_km: f64,
-    length_km: f64,
-    elevation_change_m: f64,
-    average_gradient_percent: f64,
-    start_elevation_m: f64,
-    end_elevation_m: f64,
-    peak_elevation_m: f64,
-    trough_elevation_m: f64,
-    prominence_m: f64,
-}
-
-fn apply_peak_trough_segmentation(gpx_path: &Path) -> Result<Vec<PeakTroughSegment>, Box<dyn std::error::Error>> {
-    use geo::{HaversineDistance, point};
-    
-    // Read the processed GPX file
-    let gpx = tolerant_gpx_reader::read_gpx_tolerantly(gpx_path)?;
-    
-    // Extract coordinates with elevation
-    let mut coords: Vec<(f64, f64, f64)> = Vec::new();
-    for track in &gpx.tracks {
-        for segment in &track.segments {
-            for point in &segment.points {
-                if let Some(elevation) = point.elevation {
-                    let lat = point.point().y();
-                    let lon = point.point().x();
-                    coords.push((lat, lon, elevation));
-                }
-            }
-        }
-    }
-    
-    if coords.len() < 3 {
-        return Err("Insufficient elevation data".into());
-    }
-    
-    // Calculate distances
-    let mut distances = vec![0.0];
-    for i in 1..coords.len() {
-        let a = point!(x: coords[i-1].1, y: coords[i-1].0);
-        let b = point!(x: coords[i].1, y: coords[i].0);
-        let dist = a.haversine_distance(&b);
-        distances.push(distances[i-1] + dist);
-    }
-    
-    let elevations: Vec<f64> = coords.iter().map(|c| c.2).collect();
-    
-    // Step 1: Smooth elevation data to reduce noise
-    let smoothed_elevations = apply_elevation_smoothing(&elevations, 5);
-    
-    // Step 2: Find peaks and troughs with prominence filtering
-    let peaks_troughs = find_peaks_and_troughs(&smoothed_elevations, &distances, 25.0); // 25m minimum prominence
-    
-    // Step 3: Create segments between peaks and troughs
-    let segments = create_peak_trough_segments(&peaks_troughs, &smoothed_elevations, &distances);
-    
-    Ok(segments)
-}
-
-fn apply_elevation_smoothing(elevations: &[f64], window: usize) -> Vec<f64> {
-    if elevations.is_empty() || window == 0 {
-        return elevations.to_vec();
-    }
-    
-    let mut smoothed = Vec::with_capacity(elevations.len());
-    let half_window = window / 2;
-    
-    for i in 0..elevations.len() {
-        let start = if i >= half_window { i - half_window } else { 0 };
-        let end = std::cmp::min(i + half_window + 1, elevations.len());
-        
-        let sum: f64 = elevations[start..end].iter().sum();
-        let count = end - start;
-        
-        smoothed.push(sum / count as f64);
-    }
-    
-    smoothed
-}
-
-#[derive(Debug, Clone)]
-struct PeakTroughPoint {
-    index: usize,
-    distance_km: f64,
-    elevation_m: f64,
-    point_type: String, // "Peak" or "Trough"
-    prominence_m: f64,
-}
-
-fn find_peaks_and_troughs(elevations: &[f64], distances: &[f64], min_prominence: f64) -> Vec<PeakTroughPoint> {
-    let mut peaks_troughs = Vec::new();
-    
-    if elevations.len() < 3 {
-        return peaks_troughs;
-    }
-    
-    // Always include start point
-    peaks_troughs.push(PeakTroughPoint {
-        index: 0,
-        distance_km: distances[0] / 1000.0,
-        elevation_m: elevations[0],
-        point_type: "Start".to_string(),
-        prominence_m: 0.0,
-    });
-    
-    // Find local maxima and minima
-    for i in 1..elevations.len()-1 {
-        let prev = elevations[i-1];
-        let curr = elevations[i];
-        let next = elevations[i+1];
-        
-        // Check for local maximum (peak)
-        if curr > prev && curr > next {
-            let prominence = calculate_prominence(elevations, i, true);
-            if prominence >= min_prominence {
-                peaks_troughs.push(PeakTroughPoint {
-                    index: i,
-                    distance_km: distances[i] / 1000.0,
-                    elevation_m: curr,
-                    point_type: "Peak".to_string(),
-                    prominence_m: prominence,
-                });
-            }
-        }
-        // Check for local minimum (trough)
-        else if curr < prev && curr < next {
-            let prominence = calculate_prominence(elevations, i, false);
-            if prominence >= min_prominence {
-                peaks_troughs.push(PeakTroughPoint {
-                    index: i,
-                    distance_km: distances[i] / 1000.0,
-                    elevation_m: curr,
-                    point_type: "Trough".to_string(),
-                    prominence_m: prominence,
-                });
-            }
-        }
-    }
-    
-    // Always include end point
-    let last_idx = elevations.len() - 1;
-    peaks_troughs.push(PeakTroughPoint {
-        index: last_idx,
-        distance_km: distances[last_idx] / 1000.0,
-        elevation_m: elevations[last_idx],
-        point_type: "End".to_string(),
-        prominence_m: 0.0,
-    });
-    
-    // Sort by distance to ensure proper order
-    peaks_troughs.sort_by(|a, b| a.distance_km.partial_cmp(&b.distance_km).unwrap());
-    
-    peaks_troughs
-}
-
-fn calculate_prominence(elevations: &[f64], peak_idx: usize, is_peak: bool) -> f64 {
-    if peak_idx == 0 || peak_idx >= elevations.len() - 1 {
-        return 0.0;
-    }
-    
-    let peak_elevation = elevations[peak_idx];
-    
-    if is_peak {
-        // For peaks: find the lowest point in a reasonable radius
-        let search_radius = 50.min(peak_idx).min(elevations.len() - 1 - peak_idx);
-        let start = peak_idx.saturating_sub(search_radius);
-        let end = (peak_idx + search_radius + 1).min(elevations.len());
-        
-        let min_elevation = elevations[start..end].iter()
-            .copied()
-            .fold(f64::INFINITY, f64::min);
-        
-        peak_elevation - min_elevation
-    } else {
-        // For troughs: find the highest point in a reasonable radius
-        let search_radius = 50.min(peak_idx).min(elevations.len() - 1 - peak_idx);
-        let start = peak_idx.saturating_sub(search_radius);
-        let end = (peak_idx + search_radius + 1).min(elevations.len());
-        
-        let max_elevation = elevations[start..end].iter()
-            .copied()
-            .fold(f64::NEG_INFINITY, f64::max);
-        
-        max_elevation - peak_elevation
-    }
-}
-
-fn create_peak_trough_segments(
-    peaks_troughs: &[PeakTroughPoint],
-    elevations: &[f64],
-    distances: &[f64]
-) -> Vec<PeakTroughSegment> {
-    let mut segments = Vec::new();
-    
-    if peaks_troughs.len() < 2 {
-        return segments;
-    }
-    
-    for i in 0..peaks_troughs.len()-1 {
-        let start_point = &peaks_troughs[i];
-        let end_point = &peaks_troughs[i+1];
-        
-        let start_idx = start_point.index;
-        let end_idx = end_point.index;
-        
-        // Determine segment type based on elevation change
-        let elevation_change = end_point.elevation_m - start_point.elevation_m;
-        let segment_type = if elevation_change > 10.0 {
-            "Climb".to_string()
-        } else if elevation_change < -10.0 {
-            "Descent".to_string()
-        } else {
-            "Flat".to_string()
-        };
-        
-        // Calculate average gradient
-        let length_m = distances[end_idx] - distances[start_idx];
-        let average_gradient = if length_m > 0.0 {
-            (elevation_change / length_m) * 100.0
-        } else {
-            0.0
-        };
-        
-        // Find peak and trough elevations in this segment
-        let segment_elevations = &elevations[start_idx..=end_idx];
-        let peak_elevation = segment_elevations.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-        let trough_elevation = segment_elevations.iter().copied().fold(f64::INFINITY, f64::min);
-        let prominence = peak_elevation - trough_elevation;
-        
-        let segment = PeakTroughSegment {
-            segment_id: (i + 1) as u32,
-            segment_type,
-            start_distance_km: start_point.distance_km,
-            end_distance_km: end_point.distance_km,
-            length_km: end_point.distance_km - start_point.distance_km,
-            elevation_change_m: elevation_change,
-            average_gradient_percent: average_gradient,
-            start_elevation_m: start_point.elevation_m,
-            end_elevation_m: end_point.elevation_m,
-            peak_elevation_m: peak_elevation,
-            trough_elevation_m: trough_elevation,
-            prominence_m: prominence,
-        };
-        
-        segments.push(segment);
-    }
-    
-    segments
-}
-
-fn save_peak_trough_segments_to_csv(
-    gpx_path: &Path,
-    output_folder: &str,
-    segments: &[PeakTroughSegment]
-) -> Result<(), Box<dyn std::error::Error>> {
-    use csv::Writer;
-    
-    // Generate CSV filename for peak/trough version
-    let filename = gpx_path.file_stem()
-        .and_then(|n| n.to_str())
-        .unwrap_or("unknown");
-    let csv_filename = format!("{}_peaks_troughs.csv", filename);
-    let csv_path = Path::new(output_folder).join(csv_filename);
-    
-    // Calculate summary statistics
-    let mut total_distance = 0.0;
-    let mut total_climb = 0.0;
-    let mut total_descent = 0.0;
-    let mut climb_segments = 0;
-    let mut descent_segments = 0;
-    let mut flat_segments = 0;
-    
-    for segment in segments {
-        total_distance += segment.length_km;
-        match segment.segment_type.as_str() {
-            "Climb" => {
-                total_climb += segment.elevation_change_m;
-                climb_segments += 1;
-            },
-            "Descent" => {
-                total_descent += segment.elevation_change_m.abs();
-                descent_segments += 1;
-            },
-            "Flat" => {
-                flat_segments += 1;
-            },
-            _ => {}
-        }
-    }
-    
-    // Write CSV
-    let mut wtr = Writer::from_path(csv_path)?;
-    
-    // Write route summary header
-    wtr.write_record(&["PEAK/TROUGH TERRAIN ANALYSIS", "", "", "", "", "", "", "", "", "", "", ""])?;
-    wtr.write_record(&["Method", "Signal Processing: Peaks & Troughs", "", "", "", "", "", "", "", "", "", ""])?;
-    wtr.write_record(&["Total Distance (km)", &format!("{:.3}", total_distance), "", "", "", "", "", "", "", "", "", ""])?;
-    wtr.write_record(&["Total Segments", &segments.len().to_string(), "", "", "", "", "", "", "", "", "", ""])?;
-    wtr.write_record(&["Total Climb (m)", &format!("{:.1}", total_climb), "", "", "", "", "", "", "", "", "", ""])?;
-    wtr.write_record(&["Total Descent (m)", &format!("{:.1}", total_descent), "", "", "", "", "", "", "", "", "", ""])?;
-    wtr.write_record(&["", "", "", "", "", "", "", "", "", "", "", ""])?; // Empty row
-    
-    // Write segment type distribution
-    wtr.write_record(&["SEGMENT TYPE DISTRIBUTION", "", "", "", "", "", "", "", "", "", "", ""])?;
-    wtr.write_record(&["Type", "Count", "Percentage", "", "", "", "", "", "", "", "", ""])?;
-    wtr.write_record(&["Climbs", &climb_segments.to_string(), &format!("{:.1}%", (climb_segments as f64 / segments.len() as f64) * 100.0), "", "", "", "", "", "", "", "", ""])?;
-    wtr.write_record(&["Descents", &descent_segments.to_string(), &format!("{:.1}%", (descent_segments as f64 / segments.len() as f64) * 100.0), "", "", "", "", "", "", "", "", ""])?;
-    wtr.write_record(&["Flat", &flat_segments.to_string(), &format!("{:.1}%", (flat_segments as f64 / segments.len() as f64) * 100.0), "", "", "", "", "", "", "", "", ""])?;
-    wtr.write_record(&["", "", "", "", "", "", "", "", "", "", "", ""])?; // Empty row
-    wtr.write_record(&["", "", "", "", "", "", "", "", "", "", "", ""])?; // Empty row
-    
-    // Write detailed segments header
-    wtr.write_record(&["NATURAL TERRAIN SEGMENTS", "", "", "", "", "", "", "", "", "", "", ""])?;
-    wtr.write_record(&[
-        "Segment_ID",
-        "Type",
-        "Start_Distance_km",
-        "End_Distance_km", 
-        "Length_km",
-        "Elevation_Change_m",
-        "Average_Gradient_%",
-        "Start_Elevation_m",
-        "End_Elevation_m",
-        "Peak_Elevation_m",
-        "Trough_Elevation_m",
-        "Prominence_m"
-    ])?;
-    
-    // Write segment data
-    for segment in segments {
-        wtr.write_record(&[
-            segment.segment_id.to_string(),
-            segment.segment_type.clone(),
-            format!("{:.3}", segment.start_distance_km),
-            format!("{:.3}", segment.end_distance_km),
-            format!("{:.3}", segment.length_km),
-            format!("{:.1}", segment.elevation_change_m),
-            format!("{:.1}", segment.average_gradient_percent),
-            format!("{:.1}", segment.start_elevation_m),
-            format!("{:.1}", segment.end_elevation_m),
-            format!("{:.1}", segment.peak_elevation_m),
-            format!("{:.1}", segment.trough_elevation_m),
-            format!("{:.1}", segment.prominence_m),
+            "".to_string(),
         ])?;
     }
     
